@@ -16,22 +16,25 @@ Create backend files:
 
 - `common/secret.go` - AES-GCM secret encryption, decryption, fingerprinting, and masking.
 - `common/secret_test.go` - deterministic secret helper tests.
+- `common/fusion_base_url.go` - Fusion-specific base URL normalization and SSRF validation.
+- `common/fusion_base_url_test.go` - public URL, private IP, redirect, port, and DNS rebinding validation tests.
 - `model/fusion_api_key.go` - user-owned encrypted upstream key model and DB access.
 - `model/fusion_config.go` - user Fusion config model and validation helpers.
 - `model/fusion_test.go` - SQLite-backed model and ownership tests.
 - `dto/fusion.go` - management API request/response DTOs and relay request extensions.
 - `service/fusion.go` - Fusion orchestration engine.
-- `service/fusion_billing.go` - platform service fee estimate and settlement helpers.
+- `service/fusion_billing.go` - expression-based platform service fee estimate and settlement helpers.
 - `service/fusion_test.go` - fake upstream and billing behavior tests.
 - `controller/fusion.go` - management and relay controllers.
 - `router/fusion-router.go` - route registration helpers.
 
 Modify backend files:
 
+- `common/init.go` - record whether `CRYPTO_SECRET` was explicitly configured instead of inherited from `SessionSecret`.
 - `model/main.go` - include Fusion models in `migrateDB`.
 - `router/api-router.go` - mount `/api/fusion` management routes with `UserAuth`.
 - `router/relay-router.go` - mount `/v1/fusion/chat/completions` with token auth and rate limit middleware.
-- `common/init.go` or a Fusion-specific setting loader - expose Fusion admin option defaults without changing existing relay defaults.
+- `setting/fusion_setting/fusion_setting.go` - Fusion admin option defaults, including disabled-by-default execution, expression billing, failed-candidate charging, and base URL policy.
 
 Create frontend files:
 
@@ -63,6 +66,7 @@ Do not modify:
 **Files:**
 - Create: `common/secret.go`
 - Create: `common/secret_test.go`
+- Modify: `common/init.go`
 
 - [ ] **Step 1: Add failing tests for encryption lifecycle**
 
@@ -81,8 +85,13 @@ import (
 
 func TestEncryptSecretRoundTrip(t *testing.T) {
 	originalSecret := CryptoSecret
-	t.Cleanup(func() { CryptoSecret = originalSecret })
+	originalConfigured := PersistentCryptoSecretConfigured
+	t.Cleanup(func() {
+		CryptoSecret = originalSecret
+		PersistentCryptoSecretConfigured = originalConfigured
+	})
 	CryptoSecret = "test-secret-with-enough-entropy"
+	PersistentCryptoSecretConfigured = true
 
 	encrypted, err := EncryptSecret("sk-test-secret")
 	require.NoError(t, err)
@@ -96,9 +105,33 @@ func TestEncryptSecretRoundTrip(t *testing.T) {
 
 func TestEncryptSecretRequiresCryptoSecret(t *testing.T) {
 	originalSecret := CryptoSecret
-	t.Cleanup(func() { CryptoSecret = originalSecret })
+	originalConfigured := PersistentCryptoSecretConfigured
+	t.Cleanup(func() {
+		CryptoSecret = originalSecret
+		PersistentCryptoSecretConfigured = originalConfigured
+	})
 	CryptoSecret = ""
+	PersistentCryptoSecretConfigured = false
 
+	_, err := EncryptSecret("sk-test-secret")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CRYPTO_SECRET")
+}
+
+func TestEncryptSecretRejectsSessionSecretFallback(t *testing.T) {
+	originalSecret := CryptoSecret
+	originalSessionSecret := SessionSecret
+	originalConfigured := PersistentCryptoSecretConfigured
+	t.Cleanup(func() {
+		CryptoSecret = originalSecret
+		SessionSecret = originalSessionSecret
+		PersistentCryptoSecretConfigured = originalConfigured
+	})
+	SessionSecret = "session-secret-is-not-persistent-enough"
+	CryptoSecret = SessionSecret
+	PersistentCryptoSecretConfigured = false
+
+	require.False(t, HasPersistentCryptoSecret())
 	_, err := EncryptSecret("sk-test-secret")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "CRYPTO_SECRET")
@@ -106,8 +139,13 @@ func TestEncryptSecretRequiresCryptoSecret(t *testing.T) {
 
 func TestFingerprintAndMaskSecret(t *testing.T) {
 	originalSecret := CryptoSecret
-	t.Cleanup(func() { CryptoSecret = originalSecret })
+	originalConfigured := PersistentCryptoSecretConfigured
+	t.Cleanup(func() {
+		CryptoSecret = originalSecret
+		PersistentCryptoSecretConfigured = originalConfigured
+	})
 	CryptoSecret = "test-secret-with-enough-entropy"
+	PersistentCryptoSecretConfigured = true
 
 	fingerprintA := FingerprintSecret("sk-same-secret")
 	fingerprintB := FingerprintSecret("sk-same-secret")
@@ -133,11 +171,29 @@ Expected before implementation:
 ```text
 undefined: EncryptSecret
 undefined: DecryptSecret
+undefined: HasPersistentCryptoSecret
+undefined: PersistentCryptoSecretConfigured
 undefined: FingerprintSecret
 undefined: MaskSecret
 ```
 
-- [ ] **Step 3: Implement secret helpers**
+- [ ] **Step 3: Track explicitly configured `CRYPTO_SECRET`**
+
+Modify `common/init.go` where `CRYPTO_SECRET` is loaded:
+
+```go
+if os.Getenv("CRYPTO_SECRET") != "" {
+	CryptoSecret = os.Getenv("CRYPTO_SECRET")
+	PersistentCryptoSecretConfigured = true
+} else {
+	CryptoSecret = SessionSecret
+	PersistentCryptoSecretConfigured = false
+}
+```
+
+Do not infer persistence from `CryptoSecret != ""`; `common.InitEnv` currently falls back to `SessionSecret`, and that fallback is not acceptable for persisted Fusion upstream keys.
+
+- [ ] **Step 4: Implement secret helpers**
 
 Create `common/secret.go`:
 
@@ -158,8 +214,14 @@ import (
 
 const secretEnvelopePrefix = "v1:"
 
+var PersistentCryptoSecretConfigured bool
+
+func HasPersistentCryptoSecret() bool {
+	return PersistentCryptoSecretConfigured && strings.TrimSpace(CryptoSecret) != ""
+}
+
 func secretEncryptionKey() ([]byte, error) {
-	if strings.TrimSpace(CryptoSecret) == "" {
+	if !HasPersistentCryptoSecret() {
 		return nil, errors.New("CRYPTO_SECRET is required for Fusion secret storage")
 	}
 	sum := sha256.Sum256([]byte(CryptoSecret))
@@ -237,7 +299,7 @@ func MaskSecret(plain string) string {
 }
 ```
 
-- [ ] **Step 4: Run tests and confirm pass**
+- [ ] **Step 5: Run tests and confirm pass**
 
 Run:
 
@@ -267,8 +329,10 @@ Test names:
 
 ```go
 func TestFusionAPIKeyOwnership(t *testing.T)
+func TestFusionAPIKeyStoresNormalizedBaseURL(t *testing.T)
 func TestFusionConfigValidationRejectsForeignKeys(t *testing.T)
 func TestFusionConfigAliasValidation(t *testing.T)
+func TestFusionConfigModelOverrideRespectsKeyAllowlist(t *testing.T)
 ```
 
 Use `require.NoError` for setup and `assert.Error` / `assert.Equal` for expectations.
@@ -366,6 +430,8 @@ Implementation rules:
 - Marshal arrays/maps with `common.Marshal`.
 - Validate each candidate and Judge key with `user_id = ? AND id = ?`.
 - Reject aliases that do not start with `fusion:`.
+- Validate and normalize key `BaseURL` before create/update; the model layer should receive already-normalized values or an explicit validation policy from the caller.
+- Reject candidate model overrides and Judge models that are outside the saved key's non-empty `Models` allowlist.
 
 - [ ] **Step 5: Register migrations**
 
@@ -398,6 +464,7 @@ ok  	github.com/QuantumNous/new-api/model
 - Create: `dto/fusion.go`
 - Create: `controller/fusion.go`
 - Create: `router/fusion-router.go`
+- Create: `setting/fusion_setting/fusion_setting.go`
 - Modify: `router/api-router.go`
 
 - [ ] **Step 1: Define DTOs**
@@ -472,6 +539,15 @@ Controller rules:
 - Use `common.ApiError` and `common.ApiSuccess`.
 - Use `common.Marshal` for model list/config list serialization.
 - On missing `CRYPTO_SECRET`, return HTTP 503 with message `CRYPTO_SECRET is required for Fusion`.
+- Build a base URL policy from `setting/fusion_setting`, then validate `base_url` with `common.ValidateFusionBaseURL` before saving.
+- Validate model overrides against each saved key's model allowlist.
+- Key and config test endpoints are execution paths:
+  - Require `fusion_setting.enabled=true`.
+  - Require `common.HasPersistentCryptoSecret()`.
+  - Apply strict per-user rate limits.
+  - Reject arbitrary request body passthrough and raw upstream credentials.
+  - Pre-consume platform quota before upstream I/O.
+  - Settle/refund through the same billing path as `/v1/fusion/chat/completions`.
 
 - [ ] **Step 3: Mount routes**
 
@@ -513,7 +589,104 @@ Modify `router/api-router.go` inside `SetApiRouter` after user token routes:
 RegisterFusionAPIRoutes(apiRouter)
 ```
 
-- [ ] **Step 4: Validate compile**
+- [ ] **Step 4: Add Fusion setting loader**
+
+Create `setting/fusion_setting/fusion_setting.go` with read helpers for:
+
+```go
+func IsFusionEnabled() bool
+func GetFusionMaxKeysPerUser() int
+func GetFusionMaxConfigsPerUser() int
+func GetFusionMaxCandidatesPerConfig() int
+func GetFusionMaxParallel() int
+func GetFusionDefaultTimeoutMS() int
+func GetFusionMaxTimeoutMS() int
+func GetFusionServiceModelName() string
+func GetFusionBillingMode() string
+func GetFusionBillingExpr() string
+func GetFusionMinimumQuota() int
+func ShouldFusionChargeFailedCandidates() bool
+func GetFusionFailedCandidateQuota() int
+func GetFusionKeyTestQuota() int
+func GetFusionMaxJudgeInputTokens() int
+func GetFusionMaxCandidateOutputChars() int
+func IsFusionPrivateBaseURLAllowed() bool
+func GetFusionAllowedBaseURLDomains() []string
+func GetFusionAllowedBaseURLPorts() []int
+```
+
+Default values:
+
+```text
+fusion_setting.enabled=false
+fusion_setting.max_keys_per_user=10
+fusion_setting.max_configs_per_user=10
+fusion_setting.max_candidates_per_config=4
+fusion_setting.max_parallel=4
+fusion_setting.default_timeout_ms=45000
+fusion_setting.max_timeout_ms=90000
+fusion_setting.service_model_name=fusion-service
+fusion_setting.billing_mode=expr
+fusion_setting.billing_expr=max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 + failed * failed_quota)
+fusion_setting.minimum_quota=1
+fusion_setting.charge_failed_candidates=false
+fusion_setting.failed_candidate_quota=0
+fusion_setting.key_test_quota=1
+fusion_setting.max_judge_input_tokens=128000
+fusion_setting.max_candidate_output_chars=20000
+fusion_setting.allow_private_base_url=false
+fusion_setting.allowed_base_url_domains=
+fusion_setting.allowed_base_url_ports=443
+```
+
+Implementation rules:
+
+- Register with `setting/config.GlobalConfig.Register("fusion_setting", &FusionSetting{})`.
+- Use JSON field names that match persisted option suffixes such as `enabled`, `billing_expr`, and `allowed_base_url_ports`.
+- Validate `billing_expr` before saving. Invalid expressions must fail the save and must not replace the last valid expression.
+- Backend enforcement must use helper functions, not frontend state.
+
+Backend enforcement must not depend on the frontend settings page existing.
+
+- [ ] **Step 5: Implement Fusion base URL validation**
+
+Create `common/fusion_base_url.go`:
+
+```go
+type FusionBaseURLPolicy struct {
+	AllowPrivateIP bool
+	AllowedDomains []string
+	AllowedPorts   []int
+}
+
+func ValidateFusionBaseURL(baseURL string, policy FusionBaseURLPolicy) (string, error)
+```
+
+Rules:
+
+- `common` must not import `setting/fusion_setting`; controller/service code builds `FusionBaseURLPolicy` from admin settings and passes it in.
+- Require `https`.
+- Reject userinfo such as `https://user:pass@example.com`.
+- Reject localhost, loopback, link-local, private, multicast, unspecified, and reserved IP ranges unless `fusion_setting.allow_private_base_url=true`.
+- Reject non-standard ports unless they appear in `fusion_setting.allowed_base_url_ports`.
+- Apply optional `fusion_setting.allowed_base_url_domains` when configured.
+- Normalize by trimming trailing slashes while preserving a path prefix such as `/v1`.
+- Revalidate every redirect target.
+- Use a dialer or transport flow that binds the validated IP so DNS rebinding cannot pass validation and then connect to a different private address.
+
+Create `common/fusion_base_url_test.go` with tests for:
+
+```go
+func TestValidateFusionBaseURLAllowsPublicHTTPS(t *testing.T)
+func TestValidateFusionBaseURLRejectsHTTP(t *testing.T)
+func TestValidateFusionBaseURLRejectsUserinfo(t *testing.T)
+func TestValidateFusionBaseURLRejectsPrivateIP(t *testing.T)
+func TestValidateFusionBaseURLRejectsDisallowedPort(t *testing.T)
+func TestValidateFusionBaseURLRejectsRedirectToPrivateIP(t *testing.T)
+func TestValidateFusionBaseURLPreventsDNSRebinding(t *testing.T)
+```
+
+- [ ] **Step 6: Validate compile**
 
 Run:
 
@@ -551,6 +724,14 @@ Test names:
 func TestFusionEngineSynthesizesSuccessfulCandidates(t *testing.T)
 func TestFusionEngineFailsBeforeJudgeWhenMinimumSuccessesNotMet(t *testing.T)
 func TestFusionBillingUsesEstimatedFallbackWhenUsageMissing(t *testing.T)
+func TestFusionBillingExpressionUsesFusionVariables(t *testing.T)
+func TestFusionBillingExpressionRejectsTieredBillingVariables(t *testing.T)
+func TestFusionBillingInvalidExpressionFailsClosed(t *testing.T)
+func TestFusionBillingAppliesGroupRatioAfterQuotaExpression(t *testing.T)
+func TestFusionBillingAppliesMinimumQuota(t *testing.T)
+func TestFusionBillingExpressionCanChargeFailedCandidates(t *testing.T)
+func TestFusionBillingExpressionIgnoresFailedCandidatesWhenDisabled(t *testing.T)
+func TestFusionPreConsumeCapsCandidateOutputAndJudgeInput(t *testing.T)
 ```
 
 - [ ] **Step 2: Implement engine types**
@@ -597,6 +778,9 @@ Rules:
 - Send only OpenAI-compatible `/v1/chat/completions` requests.
 - Sanitize upstream errors before returning or storing.
 - Do not log candidate full content.
+- Enforce saved key model allowlists for candidate and Judge model choices before any upstream call.
+- Truncate candidate output before building the Judge prompt according to `fusion_setting.max_candidate_output_chars`.
+- Reject or trim Judge input before the Judge call according to `fusion_setting.max_judge_input_tokens`.
 
 - [ ] **Step 4: Implement Judge call**
 
@@ -634,25 +818,54 @@ type FusionBillingInput struct {
 	CandidateCompletionTokens int
 	JudgePromptTokens         int
 	JudgeCompletionTokens     int
+	FailedCandidates          int
+	FailedPromptTokens        int
+	SuccessfulCandidates      int
+	TotalCandidates           int
 }
 
 type FusionBillingPolicy struct {
-	FixedRequestQuota        int
-	CandidateTokenMultiplier float64
-	JudgeTokenMultiplier     float64
-	MinimumQuota             int
+	Expression             string
+	MinimumQuota           int
+	ChargeFailedCandidates bool
+	FailedCandidateQuota   int
+	GroupRatio             float64
 }
 
-func CalculateFusionServiceQuota(input FusionBillingInput, policy FusionBillingPolicy) int
+type FusionBillingResult struct {
+	QuotaBeforeGroup float64
+	QuotaAfterGroup  int
+	MatchedVars      map[string]float64
+}
+
+func RunFusionBillingExpr(exprStr string, input FusionBillingInput, policy FusionBillingPolicy) (FusionBillingResult, error)
+func CalculateFusionServiceQuota(input FusionBillingInput, policy FusionBillingPolicy) (int, error)
 ```
 
 Calculation:
 
 ```text
-max(minimum, fixed + candidate_tokens*candidate_multiplier + judge_tokens*judge_multiplier)
+Evaluate policy.Expression with:
+cp, cc, jp, jc, failed, failed_prompt, failed_quota, success, total, min_quota
 ```
 
-Use decimal or explicit rounding to avoid float surprises in tests.
+Rules:
+
+- `Expression` is required; invalid expressions fail closed.
+- The expression returns new-api quota units directly.
+- Do not call `pkg/billingexpr.ComputeTieredQuota` or the existing tiered settlement helper directly; that path treats expression output as provider price per 1M tokens and exposes variables such as `p`, `c`, `cr`, and `cc`.
+- Either add a Fusion-specific compile/run helper in `service/fusion_billing.go`, or explicitly extend `pkg/billingexpr` with a separate Fusion environment and a no-provider-price conversion mode.
+- If `ChargeFailedCandidates=false`, pass `failed=0` and `failed_prompt=0` even when candidates failed.
+- If `ChargeFailedCandidates=true`, pass actual failed counts and estimated failed prompt tokens.
+- Apply `MinimumQuota` after expression evaluation if the expression result is lower.
+- Apply group ratio after the expression has produced quota units.
+- Use `pkg/billingexpr.QuotaRound` or an equivalent single rounding helper to avoid pre-consume/settlement drift.
+- The compile environment must include `max`, `min`, `abs`, `ceil`, and `floor`, plus aliases:
+  - `candidate_prompt` = `cp`
+  - `candidate_completion` = `cc`
+  - `judge_prompt` = `jp`
+  - `judge_completion` = `jc`
+- Expressions that reference unsupported tiered-billing variables such as `p`, `c`, `cr`, or `img` must fail validation instead of silently evaluating to zero.
 
 - [ ] **Step 6: Run service tests**
 
@@ -684,10 +897,37 @@ func FusionChatCompletions(c *gin.Context)
 
 Required behavior:
 
-- Parse OpenAI chat request.
+- Check `fusion_setting.enabled` before config lookup, key decryption, billing, or upstream calls.
+- Read and inspect the raw JSON body before parsing into `dto.GeneralOpenAIRequest`.
+- Reject forbidden top-level or nested Fusion direct-call fields before DTO parsing:
+  - `api_key`
+  - `base_url`
+  - `key_id`
+  - `key_ids`
+  - `candidate_key_ids`
+  - `judge_key_id`
+  - `upstream_api_key`
+  - `upstream_base_url`
+  - `fusion.api_key`
+  - `fusion.base_url`
+  - `fusion.key_id`
+  - `fusion.candidate_key_ids`
+  - `fusion.judge_key_id`
+- Parse OpenAI chat request only after the raw field scan passes.
 - Reject `stream=true`.
+- Reject any per-request raw `api_key`, `base_url`, or saved-key direct-call override.
 - Resolve config from `model` alias.
+- Manually enforce token model limits because this route intentionally does not mount `middleware.Distribute()`:
+  - Read `constant.ContextKeyTokenModelLimitEnabled`.
+  - Read `constant.ContextKeyTokenModelLimit`.
+  - Match with `ratio_setting.FormatMatchingModelName(request.Model)`.
+  - Return the same forbidden semantics as the normal distributor when the token cannot access the Fusion alias.
+- Set context fields normally provided or relied on downstream:
+  - `constant.ContextKeyOriginalModel` / `"original_model"` = requested Fusion alias.
+  - Request start time if the billing/logging path expects it.
+  - Route tag remains `fusion`.
 - Estimate and pre-consume platform service quota.
+- Build the minimum `relay/common.RelayInfo` or billing context needed by `service.PreConsumeBilling` without pretending there is an admin `Channel`; use `channel_id=0`.
 - Execute `service.FusionEngine`.
 - Settle actual platform quota.
 - Return OpenAI-compatible chat completion response.
@@ -731,6 +971,7 @@ ok
 - Create Fusion frontend files listed in File Structure.
 - Modify navigation/sidebar registration files found by `rg -n "'/keys'|\"/keys\"|ApiKeys|keys" web/default/src`.
 - Modify locale JSON files.
+- Modify admin/system settings files discovered by searching `fusion_setting`, `billing_setting`, and existing settings pages.
 
 - [ ] **Step 1: Define frontend types and API client**
 
@@ -773,7 +1014,39 @@ export const Route = createFileRoute('/_authenticated/fusion/')({
 })
 ```
 
-- [ ] **Step 4: Add i18n keys**
+- [ ] **Step 4: Add admin settings UI**
+
+Add an admin-visible settings section after backend `fusion_setting` option keys exist.
+
+Controls:
+
+- Enable/disable switch for `fusion_setting.enabled`.
+- Billing expression editor with smoke-test validation.
+- Minimum quota and key-test quota inputs.
+- Failed candidate charging toggle and failed-candidate quota input.
+- Max keys/configs/candidates/parallelism inputs.
+- Default and max timeout inputs.
+- Judge input token cap and candidate output character cap inputs.
+- Private base URL allow toggle.
+- Allowed domain list and allowed port list.
+
+Admin UI rules:
+
+- Do not let an invalid expression replace the last valid expression.
+- Display a warning when `CRYPTO_SECRET` is not explicitly configured.
+- Disable test/execution buttons when Fusion is globally disabled.
+- Backend remains the source of truth; frontend checks are convenience only.
+
+- [ ] **Step 5: Confirm active frontend theme**
+
+The repository contains both default and classic frontends. Before exposing navigation:
+
+- Check the deployed theme setting and `common/constants.go`.
+- If the deployment uses `web/default`, add the default route/page.
+- If the deployment uses classic, either implement the equivalent classic page or hide Fusion navigation in classic until that page exists.
+- In all cases, backend routes and enforcement must work even when no frontend page is available.
+
+- [ ] **Step 6: Add i18n keys**
 
 Add English source strings used by the page to:
 
@@ -788,7 +1061,7 @@ web/default/src/i18n/locales/vi.json
 
 Every visible label, toast, empty state, dialog title, and validation message must use `t('English key')`.
 
-- [ ] **Step 5: Run frontend checks**
+- [ ] **Step 7: Run frontend checks**
 
 Run from `web/default`:
 
@@ -839,15 +1112,167 @@ ok
 
 If unrelated existing failures occur, record the exact package and error before making any changes.
 
-- [ ] **Step 3: Verify existing relay still works**
+- [ ] **Step 3: Verify explicit `CRYPTO_SECRET` requirement**
+
+Start with `CRYPTO_SECRET` unset and `SESSION_SECRET` set. Confirm `common.InitEnv` makes `CryptoSecret == SessionSecret` but `HasPersistentCryptoSecret() == false`.
+
+Expected:
+
+```text
+key create/update/test returns fusion_crypto_secret_required
+no upstream request is made
+existing non-Fusion routes are unaffected
+```
+
+- [ ] **Step 4: Verify existing relay still works**
 
 Run a smoke request against existing `/v1/chat/completions` using a normal configured channel. Confirm it still enters the regular `controller.Relay` path and does not require Fusion keys.
 
-- [ ] **Step 4: Verify Fusion insufficient quota fails closed**
+- [ ] **Step 5: Verify Fusion insufficient quota fails closed**
 
 Use a low-quota token and call `/v1/fusion/chat/completions`. Confirm the response fails before any fake upstream server receives a candidate request.
 
-- [ ] **Step 5: Run security scan**
+- [ ] **Step 6: Verify Fusion disabled fails closed**
+
+Set `fusion_setting.enabled=false` and call `/v1/fusion/chat/completions` with an otherwise valid token, config, and fake upstream key.
+
+Expected:
+
+```text
+HTTP 403 or 503
+error.code = fusion_disabled
+fake upstream request count = 0
+key decrypt count = 0
+```
+
+- [ ] **Step 7: Verify raw forbidden fields are rejected before DTO parsing**
+
+Call `/v1/fusion/chat/completions` with request JSON that tries to include raw upstream routing data:
+
+```json
+{
+  "model": "fusion:research",
+  "base_url": "https://example.com",
+  "api_key": "sk-user-direct",
+  "messages": [
+    { "role": "user", "content": "hello" }
+  ]
+}
+```
+
+Expected:
+
+```text
+HTTP 400
+error.code = fusion_direct_key_rejected
+fake upstream request count = 0
+```
+
+- [ ] **Step 8: Verify token model limits are enforced**
+
+Create a token with model limit enabled and without access to `fusion:research`.
+
+Expected:
+
+```text
+HTTP 403
+error matches normal token model forbidden semantics
+fake upstream request count = 0
+```
+
+- [ ] **Step 9: Verify arbitrary public base URL is allowed only through enabled config**
+
+Create a saved Fusion key with a fake public HTTPS `base_url` pointing at the test server, enable Fusion, create an enabled Fusion config, and call `/v1/fusion/chat/completions`.
+
+Expected:
+
+```text
+request succeeds
+fake upstream request count > 0
+no raw api_key or base_url is accepted from request body
+```
+
+- [ ] **Step 10: Verify key/config test endpoints are not free bypasses**
+
+Call:
+
+```text
+POST /api/fusion/keys/:id/test
+POST /api/fusion/configs/:id/test
+```
+
+Expected:
+
+```text
+Fusion disabled: rejected before decrypt/upstream
+missing CRYPTO_SECRET: rejected before decrypt/upstream
+enabled and configured: pre-consumes quota before upstream
+insufficient quota: no upstream request
+request body cannot supply api_key/base_url/messages passthrough for key test
+```
+
+- [ ] **Step 11: Verify failed-candidate charging policy**
+
+Run the same request twice with one successful candidate, one failed candidate, and a successful Judge:
+
+```text
+fusion_setting.charge_failed_candidates=false
+fusion_setting.charge_failed_candidates=true
+```
+
+Expected:
+
+```text
+false: billing expression receives failed=0 and failed_prompt=0
+true: billing expression receives failed=1 and failed_prompt=<estimated prompt tokens>
+```
+
+- [ ] **Step 12: Verify invalid expression fails closed**
+
+Save or force an invalid `fusion_setting.billing_expr`.
+
+Expected:
+
+```text
+admin save rejects invalid expression
+if invalid state is loaded, Fusion execution is disabled
+no fallback to zero/free billing
+```
+
+- [ ] **Step 13: Verify model allowlist enforcement**
+
+Create a Fusion key with `models=["gpt-4o-mini"]`, then configure a candidate override or Judge model as `gpt-4o`.
+
+Expected:
+
+```text
+config save/test rejects the model
+relay execution does not call upstream
+```
+
+- [ ] **Step 14: Verify SSRF protections**
+
+Test saved key creation/update with:
+
+```text
+http://example.com
+https://user:pass@example.com
+https://127.0.0.1
+https://10.0.0.10
+https://[::1]
+https://example.com:8443
+public URL that redirects to 127.0.0.1
+hostname that resolves public during validation and private during connect
+```
+
+Expected:
+
+```text
+all unsafe cases rejected unless the specific admin policy explicitly allows them
+redirect and DNS rebinding cases cannot reach private/internal targets
+```
+
+- [ ] **Step 15: Run security scan**
 
 Use Codex Security threat modeling or security diff scan focused on:
 
@@ -856,18 +1281,37 @@ Use Codex Security threat modeling or security diff scan focused on:
 - Log redaction.
 - User ownership checks.
 - Billing bypass.
+- Fusion disabled bypass.
+- Direct user-key relay bypass.
+- Failed-candidate billing policy.
 - Existing relay regression risk.
 
 ## Self-Review Checklist
 
 - Database table design keeps user keys separate from admin `Channel`.
 - `/v1/fusion/chat/completions` does not mount `middleware.Distribute`.
+- Fusion relay manually enforces token model limits normally checked by `middleware.Distribute`.
+- Fusion relay sets `original_model` / `ContextKeyOriginalModel` before billing and token counting.
 - Fusion management APIs use `UserAuth`.
 - Fusion relay uses `TokenAuth`.
-- User raw upstream keys never appear in relay request JSON.
-- `CRYPTO_SECRET` is required before storing keys.
+- Raw request JSON is scanned before DTO parsing so forbidden direct-key fields cannot be ignored.
+- User raw upstream keys and base URLs never appear in relay request JSON.
+- Explicit persistent `CRYPTO_SECRET` is required before storing, testing, decrypting, or using keys.
+- `SessionSecret` fallback is rejected for Fusion secret storage.
+- `fusion_setting.enabled=false` blocks execution before key decryption and upstream calls.
+- Saved user keys are not directly callable outside enabled Fusion configs.
+- Key/config test endpoints are gated, limited, and billed.
 - Platform service fee is charged before upstream calls.
+- Platform service fee is expression-configured by admin.
+- Fusion billing uses Fusion-specific variables and quota-unit output, not tiered provider-price conversion.
+- Invalid Fusion expressions fail closed.
+- Failed candidate charging is controlled by admin policy.
+- Candidate/Judge model choices respect saved key allowlists.
+- Candidate output and Judge input caps are enforced.
+- Fusion base URLs pass strict HTTPS/SSRF/redirect/DNS rebinding validation.
 - Failure refunds use existing billing session semantics.
 - Existing relay routes remain unchanged.
+- Admin settings UI exposes enable switch, billing expression validation, failure charging policy, base URL policy, and caps.
+- Active frontend theme is handled; classic navigation is hidden if no classic page exists.
 - Frontend text is i18n-backed.
-- Tests cover ownership, billing, missing usage fallback, and min-success failure.
+- Tests cover ownership, billing, missing usage fallback, min-success failure, token model limit enforcement, free-bypass prevention, SSRF, invalid expression fail-closed, and model allowlists.
