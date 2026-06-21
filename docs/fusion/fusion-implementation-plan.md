@@ -1097,9 +1097,13 @@ bun run lint: fails on existing non-Fusion lint debt outside the Fusion change s
 ## Task 7: Security Review And Compatibility Validation
 
 **Files:**
-- No new files required unless findings require changes.
+- `common/fusion_base_url.go`
+- `service/fusion.go`
+- `service/fusion_test.go`
+- `controller/fusion_test.go`
+- `router/fusion_relay_test.go`
 
-- [ ] **Step 1: Run backend tests**
+- [x] **Step 1: Run backend tests**
 
 Run:
 
@@ -1113,7 +1117,18 @@ Expected:
 ok
 ```
 
-- [ ] **Step 2: Run full backend test sweep if time allows**
+Stage 7 result:
+
+```text
+go test ./controller ./router ./service ./model ./common -run Fusion -count=1: pass
+go test ./common ./model ./service ./controller ./router -count=1: fails only in existing non-Fusion package github.com/QuantumNous/new-api/service
+  TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode: expected int(2), actual int64(3)
+  TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty: expected int(1), actual int64(4)
+go test ./service -run '^TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode$' -count=1: pass
+go test ./service -run '^TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty$' -count=1: pass
+```
+
+- [x] **Step 2: Run full backend test sweep if time allows**
 
 Run:
 
@@ -1129,7 +1144,13 @@ ok
 
 If unrelated existing failures occur, record the exact package and error before making any changes.
 
-- [ ] **Step 3: Verify explicit `CRYPTO_SECRET` requirement**
+Stage 7 result:
+
+```text
+go test ./... -count=1: fails only in existing non-Fusion package github.com/QuantumNous/new-api/service with the same channel_affinity_usage_cache_test.go assertions; other listed packages passed.
+```
+
+- [x] **Step 3: Verify explicit `CRYPTO_SECRET` requirement**
 
 Start with `CRYPTO_SECRET` unset and `SESSION_SECRET` set. Confirm `common.InitEnv` makes `CryptoSecret == SessionSecret` but `HasPersistentCryptoSecret() == false`.
 
@@ -1145,11 +1166,19 @@ existing non-Fusion routes are unaffected
 
 Run a smoke request against existing `/v1/chat/completions` using a normal configured channel. Confirm it still enters the regular `controller.Relay` path and does not require Fusion keys.
 
-- [ ] **Step 5: Verify Fusion insufficient quota fails closed**
+Stage 7 result:
+
+```text
+Automated route regression added: TestNormalChatCompletionsRouteStillRegistered.
+Source inspection confirms /v1/chat/completions remains under relayV1Router -> httpRouter.Use(middleware.Distribute()).
+No live normal configured-channel smoke request was run in Stage 7.
+```
+
+- [x] **Step 5: Verify Fusion insufficient quota fails closed**
 
 Use a low-quota token and call `/v1/fusion/chat/completions`. Confirm the response fails before any fake upstream server receives a candidate request.
 
-- [ ] **Step 6: Verify Fusion disabled fails closed**
+- [x] **Step 6: Verify Fusion disabled fails closed**
 
 Set `fusion_setting.enabled=false` and call `/v1/fusion/chat/completions` with an otherwise valid token, config, and fake upstream key.
 
@@ -1162,7 +1191,7 @@ fake upstream request count = 0
 key decrypt count = 0
 ```
 
-- [ ] **Step 7: Verify raw forbidden fields are rejected before DTO parsing**
+- [x] **Step 7: Verify raw forbidden fields are rejected before DTO parsing**
 
 Call `/v1/fusion/chat/completions` with request JSON that tries to include raw upstream routing data:
 
@@ -1185,7 +1214,7 @@ error.code = fusion_direct_key_rejected
 fake upstream request count = 0
 ```
 
-- [ ] **Step 8: Verify token model limits are enforced**
+- [x] **Step 8: Verify token model limits are enforced**
 
 Create a token with model limit enabled and without access to `fusion:research`.
 
@@ -1197,7 +1226,7 @@ error matches normal token model forbidden semantics
 fake upstream request count = 0
 ```
 
-- [ ] **Step 9: Verify arbitrary public base URL is allowed only through enabled config**
+- [x] **Step 9: Verify arbitrary public base URL is allowed only through enabled config**
 
 Create a saved Fusion key with a fake public HTTPS `base_url` pointing at the test server, enable Fusion, create an enabled Fusion config, and call `/v1/fusion/chat/completions`.
 
@@ -1209,7 +1238,7 @@ fake upstream request count > 0
 no raw api_key or base_url is accepted from request body
 ```
 
-- [ ] **Step 10: Verify key/config test endpoints are not free bypasses**
+- [x] **Step 10: Verify key/config test endpoints are not free bypasses**
 
 Call:
 
@@ -1228,7 +1257,14 @@ insufficient quota: no upstream request
 request body cannot supply api_key/base_url/messages passthrough for key test
 ```
 
-- [ ] **Step 11: Verify failed-candidate charging policy**
+Stage 7 result:
+
+```text
+Current implementation is fail-closed: both test endpoints require Fusion enabled and persistent CRYPTO_SECRET before lookup, then return 501 without decrypting keys or calling upstream.
+Billed execution for test endpoints is not implemented yet and remains a release gap before those buttons can perform live provider tests.
+```
+
+- [x] **Step 11: Verify failed-candidate charging policy**
 
 Run the same request twice with one successful candidate, one failed candidate, and a successful Judge:
 
@@ -1244,7 +1280,7 @@ false: billing expression receives failed=0 and failed_prompt=0
 true: billing expression receives failed=1 and failed_prompt=<estimated prompt tokens>
 ```
 
-- [ ] **Step 12: Verify invalid expression fails closed**
+- [x] **Step 12: Verify invalid expression fails closed**
 
 Save or force an invalid `fusion_setting.billing_expr`.
 
@@ -1256,7 +1292,7 @@ if invalid state is loaded, Fusion execution is disabled
 no fallback to zero/free billing
 ```
 
-- [ ] **Step 13: Verify model allowlist enforcement**
+- [x] **Step 13: Verify model allowlist enforcement**
 
 Create a Fusion key with `models=["gpt-4o-mini"]`, then configure a candidate override or Judge model as `gpt-4o`.
 
@@ -1267,7 +1303,7 @@ config save/test rejects the model
 relay execution does not call upstream
 ```
 
-- [ ] **Step 14: Verify SSRF protections**
+- [x] **Step 14: Verify SSRF protections**
 
 Test saved key creation/update with:
 
@@ -1289,7 +1325,7 @@ all unsafe cases rejected unless the specific admin policy explicitly allows the
 redirect and DNS rebinding cases cannot reach private/internal targets
 ```
 
-- [ ] **Step 15: Run security scan**
+- [x] **Step 15: Run security scan**
 
 Use Codex Security threat modeling or security diff scan focused on:
 
@@ -1302,6 +1338,14 @@ Use Codex Security threat modeling or security diff scan focused on:
 - Direct user-key relay bypass.
 - Failed-candidate billing policy.
 - Existing relay regression risk.
+
+Stage 7 result:
+
+```text
+Codex Security diff scan 30155b28-6914-4da2-953e-1f77415d4035 over 4d425e6b..28ebc96f: complete, findingCount=0.
+Report: C:\Users\imyyy\AppData\Local\Temp\codex-security-scans-DMfXa9\new-api\28ebc96f9a8ce81dd20dea76ae4f06d1af618327_20260621T104938Z_xe3y5oqs\report.md
+Stage 7 fix added connect-time DNS/IP validation for Fusion upstream calls and API-key redaction from upstream error text.
+```
 
 ## Self-Review Checklist
 
@@ -1317,7 +1361,7 @@ Use Codex Security threat modeling or security diff scan focused on:
 - `SessionSecret` fallback is rejected for Fusion secret storage.
 - `fusion_setting.enabled=false` blocks execution before key decryption and upstream calls.
 - Saved user keys are not directly callable outside enabled Fusion configs.
-- Key/config test endpoints are gated, limited, and billed.
+- Key/config test endpoints are gated and fail closed; billed test execution is not implemented yet and remains a release gap.
 - Platform service fee is charged before upstream calls.
 - Platform service fee is expression-configured by admin.
 - Fusion billing uses Fusion-specific variables and quota-unit output, not tiered provider-price conversion.

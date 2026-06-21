@@ -8,10 +8,10 @@ This is the working progress board for the Fusion feature. Update this file afte
 |---|---|
 | Product/design scope | Ready |
 | Implementation plan | Ready |
-| Business code changes | Stage 6 support complete |
+| Business code changes | Stage 7 security hardening complete |
 | Frontend changes | Stage 6 complete |
-| Security validation | Stage 5 focused validation passed; Stage 6 focused checks passed |
-| Current next action | Implement Stage 7: security and compatibility validation |
+| Security validation | Stage 7 focused tests passed; Codex Security diff scan complete with 0 unresolved findings |
+| Current next action | Implement Stage 8: release handoff |
 
 Current source documents:
 
@@ -67,7 +67,7 @@ These decisions are binding for the first implementation pass:
 | 4 | Fusion engine and billing | Complete | Parallel candidate, Judge synthesis, Fusion expression billing tests pass |
 | 5 | Relay endpoint | Complete | `/v1/fusion/chat/completions` enforces auth, billing, no direct-key bypass, and returns OpenAI-compatible output |
 | 6 | Frontend user and admin UI | Complete | User key/config pages and admin settings work in the active frontend theme |
-| 7 | Security and compatibility validation | Not started | Existing relay unchanged, Fusion abuse/security checks pass |
+| 7 | Security and compatibility validation | Complete | Existing relay unchanged, Fusion abuse/security checks pass |
 | 8 | Release handoff | Not started | Docs updated with final status, validation evidence, and deployment notes |
 
 ## Stage 0: Planning Baseline
@@ -381,11 +381,15 @@ bun run lint: fails on existing non-Fusion lint debt, including forgot-password-
 
 ## Stage 7: Security And Compatibility Validation
 
-State: Not started
+State: Complete
 
 Primary files:
 
-- Files changed in stages 1 through 6.
+- `common/fusion_base_url.go`
+- `service/fusion.go`
+- `service/fusion_test.go`
+- `controller/fusion_test.go`
+- `router/fusion_relay_test.go`
 
 Completion criteria:
 
@@ -399,14 +403,39 @@ Completion criteria:
 - SSRF tests cover private IP, loopback, userinfo, redirect-to-private, disallowed port, and DNS rebinding.
 - Security scan or manual threat review covers secret leakage, SSRF, ownership, billing bypass, disabled bypass, direct-key bypass, and existing relay regression.
 
+Implemented behavior:
+
+- Revalidated saved Fusion `base_url` before decrypting the stored upstream API key.
+- Wrapped Fusion upstream HTTP clients with a protected transport that disables proxies, disables redirects, validates host and port at connect time, resolves DNS inside `DialContext`, rejects every private/internal resolved IP by default, and dials the validated IP directly.
+- Kept fallback validation for non-`*http.Transport` clients.
+- Redacted known upstream API keys from sanitized upstream error text.
+- Added regression tests for model allowlists, missing `CRYPTO_SECRET` before lookup, nested direct credential rejection, invalid billing expressions before upstream I/O, protected connect-time DNS/IP validation, upstream API-key redaction, and normal `/v1/chat/completions` route registration.
+- Key/config test endpoints remain fail-closed with `501 not implemented`; they cannot be used as a free execution bypass, but billed execution for those test buttons remains a Stage 8/release-gap item.
+- No live real-provider smoke test was run. Existing relay compatibility was covered by route/middleware source inspection and the new route registration regression test, not by a configured production channel request.
+
 Validation:
 
 ```powershell
+go test ./controller ./router ./service ./model ./common -run Fusion -count=1
 go test ./common ./model ./service ./controller ./router -count=1
 go test ./... -count=1
 ```
 
 If `go test ./...` has unrelated existing failures, record exact package names and error messages in this file.
+
+Validation result recorded on 2026-06-21:
+
+```text
+go test ./controller ./router ./service ./model ./common -run Fusion -count=1: pass
+Codex Security diff scan 30155b28-6914-4da2-953e-1f77415d4035 over 4d425e6b..28ebc96f: complete, findingCount=0
+Security report: C:\Users\imyyy\AppData\Local\Temp\codex-security-scans-DMfXa9\new-api\28ebc96f9a8ce81dd20dea76ae4f06d1af618327_20260621T104938Z_xe3y5oqs\report.md
+go test ./common ./model ./service ./controller ./router -count=1: fails in existing non-Fusion package github.com/QuantumNous/new-api/service
+  TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode: expected int(2), actual int64(3)
+  TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty: expected int(1), actual int64(4)
+go test ./service -run '^TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode$' -count=1: pass
+go test ./service -run '^TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty$' -count=1: pass
+go test ./... -count=1: same existing non-Fusion package failure in github.com/QuantumNous/new-api/service; other listed packages passed
+```
 
 ## Stage 8: Release Handoff
 

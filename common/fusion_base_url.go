@@ -45,12 +45,8 @@ func ValidateFusionBaseURL(baseURL string, policy FusionBaseURLPolicy) (string, 
 	if err != nil {
 		return "", err
 	}
-	if !fusionAllowedPort(port, policy.AllowedPorts) {
-		return "", fmt.Errorf("base_url port %d is not allowed", port)
-	}
-
-	if len(policy.AllowedDomains) > 0 && net.ParseIP(host) == nil && !isDomainListed(host, policy.AllowedDomains) {
-		return "", fmt.Errorf("base_url domain is not allowed: %s", host)
+	if err := ValidateFusionBaseURLHostAndPort(host, port, policy); err != nil {
+		return "", err
 	}
 
 	if err := validateFusionBaseURLHost(host, policy); err != nil {
@@ -91,6 +87,20 @@ func fusionAllowedPort(port int, allowedPorts []int) bool {
 	return false
 }
 
+func ValidateFusionBaseURLHostAndPort(host string, port int, policy FusionBaseURLPolicy) error {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return fmt.Errorf("base_url host is required")
+	}
+	if !fusionAllowedPort(port, policy.AllowedPorts) {
+		return fmt.Errorf("base_url port %d is not allowed", port)
+	}
+	if len(policy.AllowedDomains) > 0 && net.ParseIP(host) == nil && !isDomainListed(host, policy.AllowedDomains) {
+		return fmt.Errorf("base_url domain is not allowed: %s", host)
+	}
+	return nil
+}
+
 func validateFusionBaseURLHost(host string, policy FusionBaseURLPolicy) error {
 	if ip := net.ParseIP(host); ip != nil {
 		return validateFusionBaseURLIP(host, ip, policy)
@@ -119,6 +129,10 @@ func validateFusionBaseURLIP(host string, ip net.IP, policy FusionBaseURLPolicy)
 		return fmt.Errorf("base_url private IP is not allowed: %s resolves to %s", host, ip.String())
 	}
 	return nil
+}
+
+func ValidateFusionResolvedIP(host string, ip net.IP, policy FusionBaseURLPolicy) error {
+	return validateFusionBaseURLIP(host, ip, policy)
 }
 
 func fusionNormalizedHost(host, port string) string {

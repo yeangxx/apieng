@@ -313,6 +313,11 @@ Key test is an execution path, not a free direct proxy. It must:
 - Charge `fusion_setting.key_test_quota` or the configured minimum service quota before calling upstream.
 - Apply strict per-user rate limits and sanitized error storage.
 
+Current implementation note:
+
+- The key test endpoint is mounted but fail-closed. It requires Fusion enabled and explicit persistent `CRYPTO_SECRET`, then returns `501` without decrypting keys or calling upstream.
+- Billed live key testing remains a release gap before the dashboard test button can execute a provider call.
+
 Create request:
 
 ```json
@@ -361,6 +366,11 @@ POST   /api/fusion/configs/:id/test
 ```
 
 Config test is also an execution path. It must run through the same Fusion enable gate, ownership checks, platform pre-consume, upstream execution, settlement/refund, and log path as `/v1/fusion/chat/completions`. It may accept a short test prompt, but it must not accept raw upstream credentials or per-request base URLs.
+
+Current implementation note:
+
+- The config test endpoint is mounted but fail-closed. It requires Fusion enabled and explicit persistent `CRYPTO_SECRET`, then returns `501` without decrypting keys or calling upstream.
+- Billed live config testing remains a release gap before the dashboard test dialog can execute a provider call.
 
 Create request:
 

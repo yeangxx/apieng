@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -256,6 +257,52 @@ func TestFusionEngineFailsBeforeJudgeWhenMinimumSuccessesNotMet(t *testing.T) {
 	assert.Equal(t, 1, billingInput.SuccessfulCandidates)
 	assert.Equal(t, 1, billingInput.FailedCandidates)
 	assert.Greater(t, billingInput.FailedPromptTokens, 0)
+}
+
+func TestFusionEngineRedactsAPIKeyFromUpstreamErrors(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad bearer sk-fusion-test"}}`))
+	}))
+	defer server.Close()
+	configureFusionServiceTestBaseURL(t, server.URL, nil)
+
+	key := createFusionServiceKey(t, 1, "candidate-a", server.URL+"/v1", "candidate-a")
+	judgeKey := createFusionServiceKey(t, 1, "judge", server.URL+"/v1", "judge-model")
+	fusionConfig := createFusionServiceConfig(t, 1, []int{key.Id}, judgeKey.Id, "judge-model", 1)
+
+	result, err := RunFusionEngine(context.Background(), fusionEngineTestRequest(fusionConfig, server.Client()))
+
+	require.Error(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Candidates, 1)
+	assert.NotContains(t, result.Candidates[0].SanitizedError, "sk-fusion-test")
+	assert.Contains(t, result.Candidates[0].SanitizedError, common.MaskSecret("sk-fusion-test"))
+}
+
+func TestFusionProtectedTransportRejectsPrivateConnectAddress(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	originalLookup := fusionDialLookupIPAddr
+	fusionDialLookupIPAddr = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		require.Equal(t, "rebind.test", host)
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+	t.Cleanup(func() {
+		fusionDialLookupIPAddr = originalLookup
+	})
+
+	client := fusionNoRedirectClient(&http.Client{Transport: &http.Transport{TLSClientConfig: common.InsecureTLSConfig}})
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://rebind.test/v1/chat/completions", strings.NewReader("{}"))
+	require.NoError(t, err)
+
+	resp, err := client.Do(request)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "private IP")
 }
 
 func TestFusionBillingUsesEstimatedFallbackWhenUsageMissing(t *testing.T) {

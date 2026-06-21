@@ -365,6 +365,30 @@ func TestCreateFusionConfigRejectsForeignKeys(t *testing.T) {
 	assert.Contains(t, payload["message"], "candidate key")
 }
 
+func TestCreateFusionConfigRejectsModelOutsideKeyAllowlist(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	key := createFusionControllerKey(t, 1, "owned")
+
+	recorder := fusionControllerJSONRequest(t, CreateFusionConfig, http.MethodPost, "/api/fusion/configs", 1, dto.FusionConfigCreateRequest{
+		Name:            "Research",
+		ModelAlias:      "fusion:research",
+		Enabled:         true,
+		CandidateKeyIDs: []int{key.Id},
+		CandidateModels: map[string]string{fmt.Sprintf("%d", key.Id): "gpt-4o"},
+		JudgeKeyID:      key.Id,
+		JudgeModel:      "gpt-4o-mini",
+		Strategy:        model.FusionStrategySynthesize,
+		TimeoutMS:       45000,
+		MaxParallel:     1,
+		MinSuccesses:    1,
+	})
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	payload := decodeFusionControllerResponse(t, recorder)
+	assert.Equal(t, false, payload["success"])
+	assert.Contains(t, payload["message"], "candidate model")
+}
+
 func TestCreateFusionConfigReturnsSavedShape(t *testing.T) {
 	setupFusionControllerTestDB(t)
 	key := createFusionControllerKey(t, 1, "owned")
@@ -465,6 +489,23 @@ func TestFusionTestEndpointsFailClosedUntilEngineExists(t *testing.T) {
 	assert.Contains(t, configRecorder.Body.String(), "not implemented")
 }
 
+func TestFusionTestEndpointsRequireCryptoSecretBeforeLookup(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"fusion_setting.enabled": "true",
+	}))
+	common.PersistentCryptoSecretConfigured = false
+
+	recorder := fusionControllerRequest(t, TestFusionAPIKey, http.MethodPost, "/api/fusion/keys/999/test", 1, gin.Param{
+		Key:   "id",
+		Value: "999",
+	})
+
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "CRYPTO_SECRET")
+	assert.NotContains(t, recorder.Body.String(), "record not found")
+}
+
 func TestFusionRelayDisabledBlocksBeforeUpstream(t *testing.T) {
 	setupFusionControllerTestDB(t)
 	server, calls := newFusionRelayTLSServer(t, map[string]dto.OpenAITextResponse{})
@@ -517,7 +558,27 @@ func TestFusionRelayRejectsDirectCredentialFieldsBeforeUpstream(t *testing.T) {
 	}, 1)
 
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
-	assert.Contains(t, recorder.Body.String(), "api_key")
+	assert.Contains(t, recorder.Body.String(), "fusion request cannot include")
+	assert.Equal(t, int32(0), calls.Load())
+}
+
+func TestFusionRelayRejectsNestedDirectCredentialFieldsBeforeUpstream(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server, calls := newFusionRelayTLSServer(t, map[string]dto.OpenAITextResponse{})
+	configureFusionRelayServer(t, server.URL, nil)
+
+	recorder := fusionRelayJSONRequest(t, gin.H{
+		"model": "fusion:research",
+		"fusion": gin.H{
+			"base_url": server.URL,
+		},
+		"messages": []gin.H{
+			{"role": "user", "content": "hello"},
+		},
+	}, 1)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "fusion.base_url")
 	assert.Equal(t, int32(0), calls.Load())
 }
 
@@ -560,6 +621,27 @@ func TestFusionRelayInsufficientQuotaBlocksBeforeUpstream(t *testing.T) {
 
 	require.Equal(t, http.StatusForbidden, recorder.Code)
 	assert.Contains(t, recorder.Body.String(), "quota")
+	assert.Equal(t, int32(0), calls.Load())
+}
+
+func TestFusionRelayInvalidBillingExpressionFailsBeforeUpstream(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server, calls := newFusionRelayTLSServer(t, map[string]dto.OpenAITextResponse{})
+	configureFusionRelayServer(t, server.URL, map[string]string{
+		"fusion_setting.billing_expr": "p + c",
+	})
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+
+	recorder := fusionRelayJSONRequest(t, gin.H{
+		"model": "fusion:research",
+		"messages": []gin.H{
+			{"role": "user", "content": "hello"},
+		},
+	}, 1)
+
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "fusion billing expression")
 	assert.Equal(t, int32(0), calls.Load())
 }
 

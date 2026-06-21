@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -55,6 +56,8 @@ type fusionCallTarget struct {
 	apiKey   string
 	endpoint string
 }
+
+var fusionDialLookupIPAddr = net.DefaultResolver.LookupIPAddr
 
 func RunFusionEngine(ctx context.Context, request FusionEngineRequest) (*FusionEngineResult, error) {
 	if request.Config == nil {
@@ -234,15 +237,15 @@ func resolveFusionCallTarget(key *model.FusionAPIKey, modelName string) (fusionC
 	if !allowed {
 		return fusionCallTarget{}, fmt.Errorf("model %s is not allowed by key %d", modelName, key.Id)
 	}
-	apiKey, err := key.DecryptAPIKey()
-	if err != nil {
-		return fusionCallTarget{}, err
-	}
 	normalizedBaseURL, err := common.ValidateFusionBaseURL(key.BaseURL, common.FusionBaseURLPolicy{
 		AllowPrivateIP: fusion_setting.IsFusionPrivateBaseURLAllowed(),
 		AllowedDomains: fusion_setting.GetFusionAllowedBaseURLDomains(),
 		AllowedPorts:   fusion_setting.GetFusionAllowedBaseURLPorts(),
 	})
+	if err != nil {
+		return fusionCallTarget{}, err
+	}
+	apiKey, err := key.DecryptAPIKey()
 	if err != nil {
 		return fusionCallTarget{}, err
 	}
@@ -345,6 +348,7 @@ func fusionFailedResult(keyID int, modelName string, start time.Time, status int
 
 func fusionFailedCallResult(target fusionCallTarget, request *dto.GeneralOpenAIRequest, start time.Time, status int, err error) FusionCandidateResult {
 	result := fusionFailedResult(target.keyID, target.model, start, status, err)
+	result.SanitizedError = sanitizeFusionError(err, target.apiKey)
 	result.Usage = dto.Usage{
 		PromptTokens: estimateFusionPromptTokens(request, target.model),
 		UsageSource:  "estimated",
@@ -369,10 +373,16 @@ func fusionUpstreamStatusError(resp *http.Response) error {
 	return fmt.Errorf("upstream returned status %d", resp.StatusCode)
 }
 
-func sanitizeFusionError(err error) string {
+func sanitizeFusionError(err error, secrets ...string) string {
 	message := strings.TrimSpace(err.Error())
 	if message == "" {
 		return "fusion upstream failed"
+	}
+	for _, secret := range secrets {
+		secret = strings.TrimSpace(secret)
+		if len(secret) >= 4 {
+			message = strings.ReplaceAll(message, secret, common.MaskSecret(secret))
+		}
 	}
 	if len(message) > 300 {
 		message = message[:300] + "..."
@@ -529,8 +539,107 @@ func fusionNoRedirectClient(base *http.Client) *http.Client {
 		base = http.DefaultClient
 	}
 	clone := *base
+	clone.Transport = fusionProtectedRoundTripper(clone.Transport)
 	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
 	return &clone
+}
+
+func fusionProtectedRoundTripper(base http.RoundTripper) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	transport, ok := base.(*http.Transport)
+	if !ok {
+		return fusionValidatingRoundTripper{base: base}
+	}
+	clone := transport.Clone()
+	clone.Proxy = nil
+	clone.DialTLSContext = nil
+	clone.DialContext = fusionProtectedDialContext()
+	return clone
+}
+
+type fusionValidatingRoundTripper struct {
+	base http.RoundTripper
+}
+
+func (transport fusionValidatingRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if request != nil && request.URL != nil {
+		if _, err := common.ValidateFusionBaseURL(request.URL.String(), fusionCurrentBaseURLPolicy()); err != nil {
+			return nil, err
+		}
+	}
+	return transport.base.RoundTrip(request)
+}
+
+func fusionCurrentBaseURLPolicy() common.FusionBaseURLPolicy {
+	return common.FusionBaseURLPolicy{
+		AllowPrivateIP: fusion_setting.IsFusionPrivateBaseURLAllowed(),
+		AllowedDomains: fusion_setting.GetFusionAllowedBaseURLDomains(),
+		AllowedPorts:   fusion_setting.GetFusionAllowedBaseURLPorts(),
+	}
+}
+
+func fusionProtectedDialContext() func(context.Context, string, string) (net.Conn, error) {
+	dialer := &net.Dialer{}
+	return func(ctx context.Context, network string, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		portNumber, err := strconv.Atoi(port)
+		if err != nil {
+			return nil, fmt.Errorf("base_url port is invalid: %s", port)
+		}
+		if err := common.ValidateFusionBaseURLHostAndPort(host, portNumber, fusionCurrentBaseURLPolicy()); err != nil {
+			return nil, err
+		}
+		ips, err := fusionDialTargetIPs(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		policy := fusionCurrentBaseURLPolicy()
+		for _, ip := range ips {
+			if err := common.ValidateFusionResolvedIP(host, ip, policy); err != nil {
+				return nil, err
+			}
+		}
+		var lastErr error
+		for _, ip := range ips {
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, fmt.Errorf("base_url DNS resolution returned no addresses for %s", host)
+	}
+}
+
+func fusionDialTargetIPs(ctx context.Context, host string) ([]net.IP, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		return []net.IP{ip}, nil
+	}
+	addresses, err := fusionDialLookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("base_url DNS resolution failed for %s: %w", host, err)
+	}
+	if len(addresses) == 0 {
+		return nil, fmt.Errorf("base_url DNS resolution returned no addresses for %s", host)
+	}
+	ips := make([]net.IP, 0, len(addresses))
+	for _, address := range addresses {
+		if address.IP != nil {
+			ips = append(ips, address.IP)
+		}
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("base_url DNS resolution returned no addresses for %s", host)
+	}
+	return ips, nil
 }
