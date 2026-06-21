@@ -218,6 +218,26 @@ export function ModelMutateDrawer({
       'channel_affinity_setting.rules': '[]',
       'model_deployment.ionet.api_key': '',
       'model_deployment.ionet.enabled': false,
+      'fusion_setting.enabled': false,
+      'fusion_setting.max_keys_per_user': 10,
+      'fusion_setting.max_configs_per_user': 10,
+      'fusion_setting.max_candidates_per_config': 4,
+      'fusion_setting.max_parallel': 4,
+      'fusion_setting.default_timeout_ms': 45000,
+      'fusion_setting.max_timeout_ms': 90000,
+      'fusion_setting.service_model_name': 'fusion-service',
+      'fusion_setting.billing_mode': 'expr',
+      'fusion_setting.billing_expr':
+        'max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 + failed * failed_quota)',
+      'fusion_setting.minimum_quota': 1,
+      'fusion_setting.charge_failed_candidates': false,
+      'fusion_setting.failed_candidate_quota': 0,
+      'fusion_setting.key_test_quota': 1,
+      'fusion_setting.max_judge_input_tokens': 128000,
+      'fusion_setting.max_candidate_output_chars': 20000,
+      'fusion_setting.allow_private_base_url': false,
+      'fusion_setting.allowed_base_url_domains': '[]',
+      'fusion_setting.allowed_base_url_ports': '[443]',
     }
     return getOptionValue(systemOptionsData.data, defaultModelSettings)
   }, [systemOptionsData])

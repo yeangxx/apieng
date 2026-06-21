@@ -973,7 +973,7 @@ ok
 - Modify locale JSON files.
 - Modify admin/system settings files discovered by searching `fusion_setting`, `billing_setting`, and existing settings pages.
 
-- [ ] **Step 1: Define frontend types and API client**
+- [x] **Step 1: Define frontend types and API client**
 
 Create `web/default/src/features/fusion/types.ts` with Zod schemas for key/config forms.
 
@@ -992,7 +992,7 @@ export async function deleteFusionConfig(id: number)
 export async function testFusionConfig(id: number, prompt: string)
 ```
 
-- [ ] **Step 2: Build page**
+- [x] **Step 2: Build page**
 
 Create `web/default/src/features/fusion/index.tsx` with tabs:
 
@@ -1001,7 +1001,7 @@ Create `web/default/src/features/fusion/index.tsx` with tabs:
 
 Use existing table, drawer, dialog, badge, button, and toast patterns from `features/keys` and `features/channels`.
 
-- [ ] **Step 3: Add route**
+- [x] **Step 3: Add route**
 
 Create `web/default/src/routes/_authenticated/fusion/index.tsx`:
 
@@ -1014,7 +1014,7 @@ export const Route = createFileRoute('/_authenticated/fusion/')({
 })
 ```
 
-- [ ] **Step 4: Add admin settings UI**
+- [x] **Step 4: Add admin settings UI**
 
 Add an admin-visible settings section after backend `fusion_setting` option keys exist.
 
@@ -1037,7 +1037,7 @@ Admin UI rules:
 - Disable test/execution buttons when Fusion is globally disabled.
 - Backend remains the source of truth; frontend checks are convenience only.
 
-- [ ] **Step 5: Confirm active frontend theme**
+- [x] **Step 5: Confirm active frontend theme**
 
 The repository contains both default and classic frontends. Before exposing navigation:
 
@@ -1046,7 +1046,7 @@ The repository contains both default and classic frontends. Before exposing navi
 - If the deployment uses classic, either implement the equivalent classic page or hide Fusion navigation in classic until that page exists.
 - In all cases, backend routes and enforcement must work even when no frontend page is available.
 
-- [ ] **Step 6: Add i18n keys**
+- [x] **Step 6: Add i18n keys**
 
 Add English source strings used by the page to:
 
@@ -1061,7 +1061,7 @@ web/default/src/i18n/locales/vi.json
 
 Every visible label, toast, empty state, dialog title, and validation message must use `t('English key')`.
 
-- [ ] **Step 7: Run frontend checks**
+- [x] **Step 7: Run frontend checks**
 
 Run from `web/default`:
 
@@ -1075,6 +1075,23 @@ Expected:
 ```text
 no TypeScript errors
 no lint errors
+```
+
+Stage 6 result:
+
+- `web/default/src/features/fusion/*` implements the user key/config management page.
+- `web/default/src/routes/_authenticated/fusion/index.tsx` registers the default frontend route.
+- `web/default/src/hooks/use-sidebar-data.ts` and `web/default/src/hooks/use-sidebar-config.ts` expose Fusion navigation in the default frontend.
+- `web/default/src/features/system-settings/models/fusion-settings-card.tsx` exposes Fusion admin settings.
+- `web/default/src/i18n/locales/{en,zh,fr,ja,ru,vi}.json` contain the Fusion UI strings.
+
+Validation:
+
+```powershell
+bun run typecheck: pass
+bun run build: pass
+bun x oxlint -c .oxlintrc.json src/features/fusion src/routes/_authenticated/fusion src/features/system-settings/models/fusion-settings-card.tsx src/features/system-settings/models/index.tsx src/features/system-settings/models/section-registry.tsx src/features/system-settings/types.ts src/features/models/components/drawers/model-mutate-drawer.tsx src/hooks/use-sidebar-config.ts src/hooks/use-sidebar-data.ts src/features/auth/types.ts: pass with existing import(no-cycle) warning in section-registry.tsx
+bun run lint: fails on existing non-Fusion lint debt outside the Fusion change set
 ```
 
 ## Task 7: Security Review And Compatibility Validation

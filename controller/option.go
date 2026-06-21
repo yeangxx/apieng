@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/console_setting"
+	"github.com/QuantumNous/new-api/setting/fusion_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
@@ -73,6 +74,32 @@ func buildCompletionRatioMetaValue(optionValues map[string]string) string {
 		return "{}"
 	}
 	return string(jsonBytes)
+}
+
+func validateFusionAllowedBaseURLDomainsOption(value string) error {
+	var domains []string
+	if err := common.UnmarshalJsonStr(value, &domains); err != nil {
+		return fmt.Errorf("fusion allowed domains must be a JSON string array: %w", err)
+	}
+	for _, domain := range domains {
+		if strings.TrimSpace(domain) == "" {
+			return fmt.Errorf("fusion allowed domains cannot contain empty entries")
+		}
+	}
+	return nil
+}
+
+func validateFusionAllowedBaseURLPortsOption(value string) error {
+	var ports []int
+	if err := common.UnmarshalJsonStr(value, &ports); err != nil {
+		return fmt.Errorf("fusion allowed ports must be a JSON number array: %w", err)
+	}
+	for _, port := range ports {
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("fusion allowed port is out of range: %d", port)
+		}
+	}
+	return nil
 }
 
 func GetOptions(c *gin.Context) {
@@ -324,6 +351,33 @@ func UpdateOption(c *gin.Context) {
 		}
 	case "console_setting.uptime_kuma_groups":
 		err = console_setting.ValidateConsoleSettings(option.Value.(string), "UptimeKumaGroups")
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "fusion_setting.billing_expr":
+		err = fusion_setting.ValidateFusionBillingExpr(option.Value.(string))
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "fusion_setting.allowed_base_url_domains":
+		err = validateFusionAllowedBaseURLDomainsOption(option.Value.(string))
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "fusion_setting.allowed_base_url_ports":
+		err = validateFusionAllowedBaseURLPortsOption(option.Value.(string))
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,

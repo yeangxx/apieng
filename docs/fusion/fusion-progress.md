@@ -8,10 +8,10 @@ This is the working progress board for the Fusion feature. Update this file afte
 |---|---|
 | Product/design scope | Ready |
 | Implementation plan | Ready |
-| Business code changes | Stage 5 complete |
-| Frontend changes | Not started |
-| Security validation | Stage 5 focused validation passed |
-| Current next action | Start Stage 6: frontend user and admin UI |
+| Business code changes | Stage 6 support complete |
+| Frontend changes | Stage 6 complete |
+| Security validation | Stage 5 focused validation passed; Stage 6 focused checks passed |
+| Current next action | Implement Stage 7: security and compatibility validation |
 
 Current source documents:
 
@@ -66,7 +66,7 @@ These decisions are binding for the first implementation pass:
 | 3 | Management API | Complete | `/api/fusion` key/config CRUD passes controller tests; test endpoints are mounted and fail closed until engine/billing are available |
 | 4 | Fusion engine and billing | Complete | Parallel candidate, Judge synthesis, Fusion expression billing tests pass |
 | 5 | Relay endpoint | Complete | `/v1/fusion/chat/completions` enforces auth, billing, no direct-key bypass, and returns OpenAI-compatible output |
-| 6 | Frontend user and admin UI | Not started | User key/config pages and admin settings work in the active frontend theme |
+| 6 | Frontend user and admin UI | Complete | User key/config pages and admin settings work in the active frontend theme |
 | 7 | Security and compatibility validation | Not started | Existing relay unchanged, Fusion abuse/security checks pass |
 | 8 | Release handoff | Not started | Docs updated with final status, validation evidence, and deployment notes |
 
@@ -324,14 +324,20 @@ go test ./service -run TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMo
 
 ## Stage 6: Frontend User And Admin UI
 
-State: Not started
+State: Complete
 
 Primary files:
 
 - `web/default/src/features/fusion/*`
 - `web/default/src/routes/_authenticated/fusion/index.tsx`
-- Active navigation/sidebar files discovered during implementation
-- Active admin settings files discovered during implementation
+- `web/default/src/hooks/use-sidebar-data.ts`
+- `web/default/src/hooks/use-sidebar-config.ts`
+- `web/default/src/features/system-settings/models/fusion-settings-card.tsx`
+- `web/default/src/features/system-settings/models/index.tsx`
+- `web/default/src/features/system-settings/models/section-registry.tsx`
+- `web/default/src/features/system-settings/types.ts`
+- `web/default/src/features/models/components/drawers/model-mutate-drawer.tsx`
+- `web/default/src/features/auth/types.ts`
 - `web/default/src/i18n/locales/*.json`
 
 Completion criteria:
@@ -349,6 +355,28 @@ Validation from `web/default`:
 ```powershell
 bun run typecheck
 bun run lint
+```
+
+Implementation notes:
+
+- Added the default frontend `/fusion` route with tabs for upstream keys and Fusion configs.
+- Added user CRUD/test UI for Fusion upstream keys and configs. Saved key plaintext is never shown after create/update.
+- Added sidebar navigation for the default frontend only; no classic frontend navigation was added.
+- Added admin Fusion settings under Models & Routing, including enablement, service billing expression, failure-charging policy, execution caps, and base URL domain/port policy.
+- Added `/api/status` frontend-safe flags for `fusion_enabled` and `fusion_crypto_secret_configured`.
+- Added backend option validation so invalid Fusion billing expressions, domain lists, or port lists do not replace the last valid value.
+- Added Fusion strings to all default frontend locale files. `bun run i18n:sync` reports `missingCount=0` and `untranslatedCount=0` for en, zh, fr, ja, ru, and vi.
+
+Validation results:
+
+```powershell
+gofmt -w controller/misc.go controller/option.go: pass
+bun run typecheck: pass
+bun run build: pass
+bun x oxlint -c .oxlintrc.json src/features/fusion src/routes/_authenticated/fusion src/features/system-settings/models/fusion-settings-card.tsx src/features/system-settings/models/index.tsx src/features/system-settings/models/section-registry.tsx src/features/system-settings/types.ts src/features/models/components/drawers/model-mutate-drawer.tsx src/hooks/use-sidebar-config.ts src/hooks/use-sidebar-data.ts src/features/auth/types.ts: pass with existing import(no-cycle) warning in section-registry.tsx
+go test ./controller ./setting/... -run Fusion -count=1: pass
+go test ./controller ./router ./service ./model ./common -run Fusion -count=1: pass
+bun run lint: fails on existing non-Fusion lint debt, including forgot-password-form.tsx prefer-optional-catch-binding and custom-oauth preset-selector no-useless-spread
 ```
 
 ## Stage 7: Security And Compatibility Validation

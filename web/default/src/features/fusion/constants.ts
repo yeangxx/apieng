@@ -1,0 +1,80 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+import type { StatusBadgeProps } from '@/components/status-badge'
+
+export const FUSION_KEY_STATUS = {
+  ENABLED: 1,
+  DISABLED: 2,
+} as const
+
+export const FUSION_KEY_STATUSES: Record<
+  number,
+  Pick<StatusBadgeProps, 'variant'> & {
+    label: string
+    value: number
+  }
+> = {
+  [FUSION_KEY_STATUS.ENABLED]: {
+    label: 'Enabled',
+    variant: 'success',
+    value: FUSION_KEY_STATUS.ENABLED,
+  },
+  [FUSION_KEY_STATUS.DISABLED]: {
+    label: 'Disabled',
+    variant: 'neutral',
+    value: FUSION_KEY_STATUS.DISABLED,
+  },
+}
+
+export const FUSION_KEY_STATUS_OPTIONS = Object.values(FUSION_KEY_STATUSES).map(
+  (config) => ({
+    label: config.label,
+    value: String(config.value),
+  })
+)
+
+export const FUSION_PROVIDER_OPENAI_COMPATIBLE = 'openai_compatible'
+export const FUSION_STRATEGY_SYNTHESIZE = 'synthesize'
+
+export const FUSION_BILLING_DEFAULT_EXPRESSION =
+  'max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 + failed * failed_quota)'
+
+export const FUSION_ERROR_MESSAGES = {
+  LOAD_KEYS_FAILED: 'Failed to load Fusion keys',
+  LOAD_CONFIGS_FAILED: 'Failed to load Fusion configs',
+  CREATE_KEY_FAILED: 'Failed to create Fusion key',
+  UPDATE_KEY_FAILED: 'Failed to update Fusion key',
+  DELETE_KEY_FAILED: 'Failed to delete Fusion key',
+  TEST_KEY_FAILED: 'Failed to test Fusion key',
+  CREATE_CONFIG_FAILED: 'Failed to create Fusion config',
+  UPDATE_CONFIG_FAILED: 'Failed to update Fusion config',
+  DELETE_CONFIG_FAILED: 'Failed to delete Fusion config',
+  TEST_CONFIG_FAILED: 'Failed to test Fusion config',
+  UNEXPECTED: 'An unexpected error occurred',
+} as const
+
+export const FUSION_SUCCESS_MESSAGES = {
+  KEY_CREATED: 'Fusion key created successfully',
+  KEY_UPDATED: 'Fusion key updated successfully',
+  KEY_DELETED: 'Fusion key deleted successfully',
+  CONFIG_CREATED: 'Fusion config created successfully',
+  CONFIG_UPDATED: 'Fusion config updated successfully',
+  CONFIG_DELETED: 'Fusion config deleted successfully',
+  TEST_REQUEST_SENT: 'Fusion test request sent',
+} as const

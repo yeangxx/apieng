@@ -191,6 +191,25 @@ export type ModelSettings = {
   'channel_affinity_setting.rules': string
   'model_deployment.ionet.api_key': string
   'model_deployment.ionet.enabled': boolean
+  'fusion_setting.enabled': boolean
+  'fusion_setting.max_keys_per_user': number
+  'fusion_setting.max_configs_per_user': number
+  'fusion_setting.max_candidates_per_config': number
+  'fusion_setting.max_parallel': number
+  'fusion_setting.default_timeout_ms': number
+  'fusion_setting.max_timeout_ms': number
+  'fusion_setting.service_model_name': string
+  'fusion_setting.billing_mode': 'expr'
+  'fusion_setting.billing_expr': string
+  'fusion_setting.minimum_quota': number
+  'fusion_setting.charge_failed_candidates': boolean
+  'fusion_setting.failed_candidate_quota': number
+  'fusion_setting.key_test_quota': number
+  'fusion_setting.max_judge_input_tokens': number
+  'fusion_setting.max_candidate_output_chars': number
+  'fusion_setting.allow_private_base_url': boolean
+  'fusion_setting.allowed_base_url_domains': string
+  'fusion_setting.allowed_base_url_ports': string
 }
 
 export type BillingSettings = {

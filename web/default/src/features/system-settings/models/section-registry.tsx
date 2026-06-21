@@ -22,6 +22,7 @@ import type { ModelSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 import { ClaudeSettingsCard } from './claude-settings-card'
 import { GeminiSettingsCard } from './gemini-settings-card'
+import { FusionSettingsCard } from './fusion-settings-card'
 import { GlobalSettingsCard } from './global-settings-card'
 import { GrokSettingsCard } from './grok-settings-card'
 import { RoutingReliabilitySection } from './routing-reliability-section'
@@ -60,6 +61,48 @@ const MODELS_SECTIONS = [
               settings['general_setting.ping_interval_enabled'],
             ping_interval_seconds:
               settings['general_setting.ping_interval_seconds'],
+          },
+        }}
+      />
+    ),
+  },
+  {
+    id: 'fusion',
+    titleKey: 'Fusion',
+    build: (settings: ModelSettings) => (
+      <FusionSettingsCard
+        defaultValues={{
+          fusion_setting: {
+            enabled: settings['fusion_setting.enabled'],
+            max_keys_per_user: settings['fusion_setting.max_keys_per_user'],
+            max_configs_per_user:
+              settings['fusion_setting.max_configs_per_user'],
+            max_candidates_per_config:
+              settings['fusion_setting.max_candidates_per_config'],
+            max_parallel: settings['fusion_setting.max_parallel'],
+            default_timeout_ms:
+              settings['fusion_setting.default_timeout_ms'],
+            max_timeout_ms: settings['fusion_setting.max_timeout_ms'],
+            service_model_name:
+              settings['fusion_setting.service_model_name'],
+            billing_mode: settings['fusion_setting.billing_mode'],
+            billing_expr: settings['fusion_setting.billing_expr'],
+            minimum_quota: settings['fusion_setting.minimum_quota'],
+            charge_failed_candidates:
+              settings['fusion_setting.charge_failed_candidates'],
+            failed_candidate_quota:
+              settings['fusion_setting.failed_candidate_quota'],
+            key_test_quota: settings['fusion_setting.key_test_quota'],
+            max_judge_input_tokens:
+              settings['fusion_setting.max_judge_input_tokens'],
+            max_candidate_output_chars:
+              settings['fusion_setting.max_candidate_output_chars'],
+            allow_private_base_url:
+              settings['fusion_setting.allow_private_base_url'],
+            allowed_base_url_domains:
+              settings['fusion_setting.allowed_base_url_domains'],
+            allowed_base_url_ports:
+              settings['fusion_setting.allowed_base_url_ports'],
           },
         }}
       />
