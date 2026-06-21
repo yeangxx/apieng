@@ -8,10 +8,10 @@ This is the working progress board for the Fusion feature. Update this file afte
 |---|---|
 | Product/design scope | Ready |
 | Implementation plan | Ready |
-| Business code changes | Stage 1 complete |
+| Business code changes | Stage 2 complete |
 | Frontend changes | Not started |
 | Security validation | Stage 1 focused validation passed |
-| Current next action | Start Stage 2: data models and migrations |
+| Current next action | Start Stage 3: management API |
 
 Current source documents:
 
@@ -62,7 +62,7 @@ These decisions are binding for the first implementation pass:
 |---|---|---|---|
 | 0 | Planning baseline | Complete | Docs exist, no stale open decisions, diff check passes |
 | 1 | Secret, settings, and base URL guard | Complete | Explicit crypto-secret guard, Fusion settings, SSRF validation tests pass |
-| 2 | Data models and migrations | Not started | Fusion key/config models migrate on SQLite and ownership tests pass |
+| 2 | Data models and migrations | Complete | Fusion key/config models migrate on SQLite and ownership tests pass |
 | 3 | Management API | Not started | `/api/fusion` key/config CRUD and billed test endpoints pass controller tests |
 | 4 | Fusion engine and billing | Not started | Parallel candidate, Judge synthesis, Fusion expression billing tests pass |
 | 5 | Relay endpoint | Not started | `/v1/fusion/chat/completions` enforces auth, billing, no direct-key bypass, and returns OpenAI-compatible output |
@@ -154,7 +154,7 @@ git diff --check -- main.go common setting docs\fusion: pass
 
 ## Stage 2: Data Models And Migrations
 
-State: Not started
+State: Complete
 
 Primary files:
 
@@ -176,6 +176,12 @@ Validation:
 
 ```powershell
 go test ./model -run Fusion -count=1
+```
+
+Validation result recorded on 2026-06-21:
+
+```text
+go test ./model -run Fusion -count=1: pass
 ```
 
 ## Stage 3: Management API
