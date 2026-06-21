@@ -8,10 +8,10 @@ This is the working progress board for the Fusion feature. Update this file afte
 |---|---|
 | Product/design scope | Ready |
 | Implementation plan | Ready |
-| Business code changes | Not started |
+| Business code changes | Stage 1 complete |
 | Frontend changes | Not started |
-| Security validation | Not started |
-| Current next action | Commit the planning docs, then start Stage 1 |
+| Security validation | Stage 1 focused validation passed |
+| Current next action | Start Stage 2: data models and migrations |
 
 Current source documents:
 
@@ -60,8 +60,8 @@ These decisions are binding for the first implementation pass:
 
 | Stage | Name | State | Exit Criteria |
 |---|---|---|---|
-| 0 | Planning baseline | Ready to commit | Docs exist, no stale open decisions, diff check passes |
-| 1 | Secret, settings, and base URL guard | Not started | Explicit crypto-secret guard, Fusion settings, SSRF validation tests pass |
+| 0 | Planning baseline | Complete | Docs exist, no stale open decisions, diff check passes |
+| 1 | Secret, settings, and base URL guard | Complete | Explicit crypto-secret guard, Fusion settings, SSRF validation tests pass |
 | 2 | Data models and migrations | Not started | Fusion key/config models migrate on SQLite and ownership tests pass |
 | 3 | Management API | Not started | `/api/fusion` key/config CRUD and billed test endpoints pass controller tests |
 | 4 | Fusion engine and billing | Not started | Parallel candidate, Judge synthesis, Fusion expression billing tests pass |
@@ -72,7 +72,7 @@ These decisions are binding for the first implementation pass:
 
 ## Stage 0: Planning Baseline
 
-State: Ready to commit
+State: Complete
 
 Files:
 
@@ -102,9 +102,17 @@ git diff --check exits 0
 rg exits 1 with no matches
 ```
 
+Validation result recorded on 2026-06-21:
+
+```text
+git diff --check -- docs\fusion: pass
+stale keyword scan: pass
+commit: 07eb5173 docs: add fusion implementation baseline
+```
+
 ## Stage 1: Secret, Settings, And Base URL Guard
 
-State: Not started
+State: Complete
 
 Primary files:
 
@@ -113,6 +121,7 @@ Primary files:
 - `common/secret_test.go`
 - `common/fusion_base_url.go`
 - `common/fusion_base_url_test.go`
+- `main.go`
 - `setting/fusion_setting/fusion_setting.go`
 
 Completion criteria:
@@ -120,6 +129,7 @@ Completion criteria:
 - `HasPersistentCryptoSecret()` returns true only when `CRYPTO_SECRET` is explicitly configured.
 - Fusion key storage fails closed when `CryptoSecret` came from `SessionSecret`.
 - `fusion_setting` is registered through `config.GlobalConfig.Register("fusion_setting", &FusionSetting{})`.
+- `setting/fusion_setting` is imported at startup so the registration runs in production.
 - Default `fusion_setting.enabled=false`.
 - Fusion billing expression validates before save.
 - `ValidateFusionBaseURL` requires HTTPS, rejects userinfo, blocks private/internal targets by default, validates redirect targets, and prevents DNS rebinding.
@@ -130,6 +140,16 @@ Validation:
 ```powershell
 go test ./common -run "TestEncryptSecret|TestFingerprintAndMaskSecret|TestValidateFusionBaseURL" -count=1
 go test ./setting/... -run Fusion -count=1
+go test . -run '^$' -count=1
+```
+
+Validation result recorded on 2026-06-21:
+
+```text
+go test ./common -run "TestEncryptSecret|TestFingerprintAndMaskSecret|TestValidateFusionBaseURL" -count=1: pass
+go test ./setting/... -run Fusion -count=1: pass
+go test . -run '^$' -count=1: pass
+git diff --check -- main.go common setting docs\fusion: pass
 ```
 
 ## Stage 2: Data Models And Migrations
