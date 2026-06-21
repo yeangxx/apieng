@@ -6,19 +6,46 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/fusion_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 const (
 	fusionNameMaxLength        = 80
 	fusionDefaultModelMaxBytes = 128
 )
+
+var fusionDirectRequestFields = map[string]struct{}{
+	"api_key":           {},
+	"base_url":          {},
+	"key_id":            {},
+	"key_ids":           {},
+	"candidate_key_ids": {},
+	"judge_key_id":      {},
+	"upstream_api_key":  {},
+	"upstream_base_url": {},
+}
+
+var fusionNestedRequestFields = map[string]struct{}{
+	"api_key":           {},
+	"base_url":          {},
+	"key_id":            {},
+	"candidate_key_ids": {},
+	"judge_key_id":      {},
+}
 
 func bindFusionJSON(c *gin.Context, v any) bool {
 	if err := common.UnmarshalBodyReusable(c, v); err != nil {
@@ -37,6 +64,44 @@ func fusionError(c *gin.Context, status int, err error) {
 		"success": false,
 		"message": err.Error(),
 	})
+}
+
+func fusionRequestID(c *gin.Context) string {
+	requestID := c.GetString(common.RequestIdKey)
+	if requestID == "" {
+		requestID = common.GetTimeString() + common.GetRandomString(8)
+		c.Set(common.RequestIdKey, requestID)
+	}
+	return requestID
+}
+
+func fusionOpenAIError(c *gin.Context, status int, message string, code types.ErrorCode) {
+	if code == "" {
+		code = types.ErrorCodeInvalidRequest
+	}
+	c.JSON(status, gin.H{
+		"error": types.OpenAIError{
+			Message: common.MessageWithRequestId(message, fusionRequestID(c)),
+			Type:    "new_api_error",
+			Code:    code,
+		},
+	})
+	c.Abort()
+}
+
+func fusionNewAPIError(c *gin.Context, err *types.NewAPIError) {
+	if err == nil {
+		fusionOpenAIError(c, http.StatusInternalServerError, "fusion request failed", types.ErrorCodeBadResponse)
+		return
+	}
+	openAIError := err.ToOpenAIError()
+	openAIError.Message = common.MessageWithRequestId(openAIError.Message, fusionRequestID(c))
+	status := err.StatusCode
+	if status == 0 {
+		status = http.StatusInternalServerError
+	}
+	c.JSON(status, gin.H{"error": openAIError})
+	c.Abort()
 }
 
 func parseFusionID(c *gin.Context) (int, bool) {
@@ -66,6 +131,392 @@ func validateFusionExecutionGate(c *gin.Context) bool {
 		return false
 	}
 	return true
+}
+
+func rejectFusionDirectCredentialFields(rawBody []byte) error {
+	var payload map[string]any
+	if err := common.Unmarshal(rawBody, &payload); err != nil {
+		return err
+	}
+	for field := range fusionDirectRequestFields {
+		if _, ok := payload[field]; ok {
+			return fmt.Errorf("fusion request cannot include %s", field)
+		}
+	}
+	fusionValue, ok := payload["fusion"]
+	if !ok {
+		return nil
+	}
+	fusionMap, ok := fusionValue.(map[string]any)
+	if !ok {
+		return nil
+	}
+	for field := range fusionNestedRequestFields {
+		if _, ok := fusionMap[field]; ok {
+			return fmt.Errorf("fusion request cannot include fusion.%s", field)
+		}
+	}
+	return nil
+}
+
+func validateFusionRawRelayRequest(c *gin.Context) bool {
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		status := http.StatusBadRequest
+		if common.IsRequestBodyTooLargeError(err) || errors.Is(err, common.ErrRequestBodyTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		fusionOpenAIError(c, status, err.Error(), types.ErrorCodeReadRequestBodyFailed)
+		return false
+	}
+	rawBody, err := storage.Bytes()
+	if err != nil {
+		fusionOpenAIError(c, http.StatusBadRequest, err.Error(), types.ErrorCodeReadRequestBodyFailed)
+		return false
+	}
+	if err := rejectFusionDirectCredentialFields(rawBody); err != nil {
+		fusionOpenAIError(c, http.StatusBadRequest, err.Error(), types.ErrorCodeInvalidRequest)
+		return false
+	}
+	return true
+}
+
+func validateFusionRelayChatRequest(request *dto.GeneralOpenAIRequest) error {
+	if request.Model == "" {
+		return errors.New("model is required")
+	}
+	if request.Stream != nil && *request.Stream {
+		return errors.New("fusion does not support stream=true in v1")
+	}
+	if request.N != nil && *request.N > 1 {
+		return errors.New("fusion does not support n>1 in v1")
+	}
+	if len(request.Tools) > 0 {
+		return errors.New("fusion does not support tools in v1")
+	}
+	if request.ToolChoice != nil {
+		return errors.New("fusion does not support tool_choice in v1")
+	}
+	if len(request.Functions) > 0 {
+		return errors.New("fusion does not support functions in v1")
+	}
+	if len(request.FunctionCall) > 0 {
+		return errors.New("fusion does not support function_call in v1")
+	}
+	if len(request.Messages) == 0 {
+		return errors.New("messages are required")
+	}
+	return nil
+}
+
+func enforceFusionTokenModelLimit(c *gin.Context, modelName string) bool {
+	if !common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled) {
+		return true
+	}
+	value, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
+	if !ok {
+		fusionOpenAIError(c, http.StatusForbidden, "This token has no access to any model", types.ErrorCodeAccessDenied)
+		return false
+	}
+	tokenModelLimit, ok := value.(map[string]bool)
+	if !ok {
+		tokenModelLimit = map[string]bool{}
+	}
+	matchName := ratio_setting.FormatMatchingModelName(modelName)
+	if _, ok := tokenModelLimit[matchName]; !ok {
+		fusionOpenAIError(c, http.StatusForbidden, fmt.Sprintf("This token has no access to model %s", modelName), types.ErrorCodeAccessDenied)
+		return false
+	}
+	return true
+}
+
+func fusionGroupRatioInfo(c *gin.Context) types.GroupRatioInfo {
+	userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+	usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+	if usingGroup == "" {
+		usingGroup = userGroup
+	}
+	if usingGroup == "" {
+		usingGroup = "default"
+	}
+	info := types.GroupRatioInfo{
+		GroupRatio:        ratio_setting.GetGroupRatio(usingGroup),
+		GroupSpecialRatio: -1,
+	}
+	if ratio, ok := ratio_setting.GetGroupGroupRatio(userGroup, usingGroup); ok {
+		info.GroupRatio = ratio
+		info.GroupSpecialRatio = ratio
+		info.HasSpecialRatio = true
+	}
+	return info
+}
+
+func fusionBillingPolicyFromContext(c *gin.Context) service.FusionBillingPolicy {
+	return service.FusionBillingPolicy{
+		Expression:             fusion_setting.GetFusionBillingExpr(),
+		MinimumQuota:           fusion_setting.GetFusionMinimumQuota(),
+		ChargeFailedCandidates: fusion_setting.ShouldFusionChargeFailedCandidates(),
+		FailedCandidateQuota:   fusion_setting.GetFusionFailedCandidateQuota(),
+		GroupRatio:             fusionGroupRatioInfo(c).GroupRatio,
+	}
+}
+
+func estimateFusionRelayPromptTokens(request *dto.GeneralOpenAIRequest) int {
+	meta := request.GetTokenCountMeta()
+	tokens := service.CountTextToken(meta.CombineText, request.Model)
+	tokens += meta.MessagesCount*3 + meta.NameCount*3 + meta.ToolsCount*8 + 3
+	if tokens <= 0 {
+		return 1
+	}
+	return tokens
+}
+
+func buildFusionPreConsumeInput(config *model.FusionConfig, request *dto.GeneralOpenAIRequest) (service.FusionBillingInput, error) {
+	candidateIDs, err := config.GetCandidateKeyIDs()
+	if err != nil {
+		return service.FusionBillingInput{}, err
+	}
+	promptTokens := estimateFusionRelayPromptTokens(request)
+	completionTokens := int(request.GetMaxTokens())
+	if completionTokens <= 0 {
+		completionTokens = common.PreConsumedQuota
+	}
+	if completionTokens <= 0 {
+		completionTokens = 1
+	}
+	candidateCount := len(candidateIDs)
+	return service.FusionBillingInput{
+		CandidatePromptTokens:     promptTokens * candidateCount,
+		CandidateCompletionTokens: completionTokens * candidateCount,
+		JudgePromptTokens:         promptTokens + completionTokens*candidateCount,
+		JudgeCompletionTokens:     completionTokens,
+		SuccessfulCandidates:      candidateCount,
+		TotalCandidates:           candidateCount,
+	}, nil
+}
+
+func buildFusionRelayInfo(c *gin.Context, request *dto.GeneralOpenAIRequest) (*relaycommon.RelayInfo, error) {
+	common.SetContextKey(c, constant.ContextKeyOriginalModel, request.Model)
+	c.Set("original_model", request.Model)
+	common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
+	c.Set("relay_mode", relayconstant.RelayModeChatCompletions)
+	return relaycommon.GenRelayInfo(c, types.RelayFormatOpenAI, request, nil)
+}
+
+func buildFusionChatCompletionResponse(modelAlias string, result *service.FusionEngineResult) dto.OpenAITextResponse {
+	finishReason := result.Judge.FinishReason
+	if finishReason == "" {
+		finishReason = "stop"
+	}
+	return dto.OpenAITextResponse{
+		Id:      "chatcmpl-fusion-" + common.GetRandomString(12),
+		Object:  "chat.completion",
+		Created: common.GetTimestamp(),
+		Model:   modelAlias,
+		Choices: []dto.OpenAITextResponseChoice{
+			{
+				Index: 0,
+				Message: dto.Message{
+					Role:    "assistant",
+					Content: result.Content,
+				},
+				FinishReason: finishReason,
+			},
+		},
+		Usage: result.Usage,
+	}
+}
+
+func buildFusionLogOther(relayInfo *relaycommon.RelayInfo, result *service.FusionEngineResult, preConsumedQuota int, actualQuota int, policy service.FusionBillingPolicy) map[string]interface{} {
+	other := map[string]interface{}{
+		"fusion":                   true,
+		"pre_consumed_quota":       preConsumedQuota,
+		"actual_quota":             actualQuota,
+		"group_ratio":              policy.GroupRatio,
+		"charge_failed_candidates": policy.ChargeFailedCandidates,
+		"failed_candidate_quota":   policy.FailedCandidateQuota,
+	}
+	if relayInfo != nil {
+		other["request_path"] = relayInfo.RequestURLPath
+		if relayInfo.BillingSource != "" {
+			other["billing_source"] = relayInfo.BillingSource
+		}
+		if relayInfo.UserSetting.BillingPreference != "" {
+			other["billing_preference"] = relayInfo.UserSetting.BillingPreference
+		}
+		if relayInfo.BillingSource == service.BillingSourceSubscription {
+			if relayInfo.SubscriptionId != 0 {
+				other["subscription_id"] = relayInfo.SubscriptionId
+			}
+			if relayInfo.SubscriptionPreConsumed > 0 {
+				other["subscription_pre_consumed"] = relayInfo.SubscriptionPreConsumed
+			}
+			if relayInfo.SubscriptionPostDelta != 0 {
+				other["subscription_post_delta"] = relayInfo.SubscriptionPostDelta
+			}
+		}
+	}
+	if result == nil {
+		return other
+	}
+	candidates := make([]map[string]interface{}, 0, len(result.Candidates))
+	successCount := 0
+	for _, candidate := range result.Candidates {
+		if candidate.Success {
+			successCount++
+		}
+		candidates = append(candidates, map[string]interface{}{
+			"key_id":            candidate.KeyID,
+			"model":             candidate.Model,
+			"success":           candidate.Success,
+			"prompt_tokens":     candidate.Usage.PromptTokens,
+			"completion_tokens": candidate.Usage.CompletionTokens,
+			"latency_ms":        candidate.LatencyMS,
+			"status":            candidate.UpstreamStatus,
+			"error":             candidate.SanitizedError,
+		})
+	}
+	other["candidates"] = candidates
+	other["candidate_count"] = len(result.Candidates)
+	other["candidate_success_count"] = successCount
+	other["judge"] = map[string]interface{}{
+		"key_id":            result.Judge.KeyID,
+		"model":             result.Judge.Model,
+		"success":           result.Judge.Success,
+		"prompt_tokens":     result.Judge.Usage.PromptTokens,
+		"completion_tokens": result.Judge.Usage.CompletionTokens,
+		"latency_ms":        result.Judge.LatencyMS,
+		"status":            result.Judge.UpstreamStatus,
+	}
+	input := service.BuildFusionBillingInput(result)
+	other["candidate_prompt_tokens"] = input.CandidatePromptTokens
+	other["candidate_completion_tokens"] = input.CandidateCompletionTokens
+	other["judge_prompt_tokens"] = input.JudgePromptTokens
+	other["judge_completion_tokens"] = input.JudgeCompletionTokens
+	other["failed_candidates"] = input.FailedCandidates
+	other["failed_prompt_tokens"] = input.FailedPromptTokens
+	return other
+}
+
+func recordFusionConsumeLog(c *gin.Context, relayInfo *relaycommon.RelayInfo, result *service.FusionEngineResult, preConsumedQuota int, actualQuota int, policy service.FusionBillingPolicy) {
+	useTimeSeconds := int(time.Since(relayInfo.StartTime).Seconds())
+	model.RecordConsumeLog(c, relayInfo.UserId, model.RecordConsumeLogParams{
+		ChannelId:        0,
+		PromptTokens:     result.Usage.PromptTokens,
+		CompletionTokens: result.Usage.CompletionTokens,
+		ModelName:        relayInfo.OriginModelName,
+		TokenName:        c.GetString("token_name"),
+		Quota:            actualQuota,
+		Content:          fmt.Sprintf("Fusion synthesis, candidates %d, judge model %s", len(result.Candidates), result.Judge.Model),
+		TokenId:          relayInfo.TokenId,
+		UseTimeSeconds:   useTimeSeconds,
+		IsStream:         false,
+		Group:            relayInfo.UsingGroup,
+		Other:            buildFusionLogOther(relayInfo, result, preConsumedQuota, actualQuota, policy),
+	})
+}
+
+func FusionChatCompletions(c *gin.Context) {
+	if !fusion_setting.IsFusionEnabled() {
+		fusionOpenAIError(c, http.StatusForbidden, "Fusion is disabled", types.ErrorCodeAccessDenied)
+		return
+	}
+	if !common.HasPersistentCryptoSecret() {
+		fusionOpenAIError(c, http.StatusServiceUnavailable, "CRYPTO_SECRET is required for Fusion", types.ErrorCodeInvalidRequest)
+		return
+	}
+	if !validateFusionRawRelayRequest(c) {
+		return
+	}
+
+	var request dto.GeneralOpenAIRequest
+	if err := common.UnmarshalBodyReusable(c, &request); err != nil {
+		status := http.StatusBadRequest
+		if common.IsRequestBodyTooLargeError(err) || errors.Is(err, common.ErrRequestBodyTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		fusionOpenAIError(c, status, err.Error(), types.ErrorCodeInvalidRequest)
+		return
+	}
+	request.Model = strings.TrimSpace(request.Model)
+	if err := validateFusionRelayChatRequest(&request); err != nil {
+		fusionOpenAIError(c, http.StatusBadRequest, err.Error(), types.ErrorCodeInvalidRequest)
+		return
+	}
+	if !enforceFusionTokenModelLimit(c, request.Model) {
+		return
+	}
+
+	config, err := model.GetFusionConfigByUserAndAlias(c.GetInt("id"), request.Model)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			fusionOpenAIError(c, http.StatusNotFound, fmt.Sprintf("fusion model %s not found", request.Model), types.ErrorCodeModelNotFound)
+			return
+		}
+		fusionOpenAIError(c, http.StatusInternalServerError, err.Error(), types.ErrorCodeQueryDataError)
+		return
+	}
+	if !config.Enabled {
+		fusionOpenAIError(c, http.StatusForbidden, "fusion config is disabled", types.ErrorCodeAccessDenied)
+		return
+	}
+
+	relayInfo, err := buildFusionRelayInfo(c, &request)
+	if err != nil {
+		fusionOpenAIError(c, http.StatusInternalServerError, err.Error(), types.ErrorCodeGenRelayInfoFailed)
+		return
+	}
+	groupRatioInfo := fusionGroupRatioInfo(c)
+	relayInfo.PriceData = types.PriceData{
+		GroupRatioInfo: groupRatioInfo,
+	}
+	policy := fusionBillingPolicyFromContext(c)
+	preConsumeInput, err := buildFusionPreConsumeInput(config, &request)
+	if err != nil {
+		fusionOpenAIError(c, http.StatusBadRequest, err.Error(), types.ErrorCodeInvalidRequest)
+		return
+	}
+	preConsumedQuota, err := service.CalculateFusionServiceQuota(preConsumeInput, policy)
+	if err != nil {
+		fusionOpenAIError(c, http.StatusServiceUnavailable, err.Error(), types.ErrorCodeModelPriceError)
+		return
+	}
+	relayInfo.PriceData.QuotaToPreConsume = preConsumedQuota
+	if newAPIError := service.PreConsumeBilling(c, preConsumedQuota, relayInfo); newAPIError != nil {
+		fusionNewAPIError(c, newAPIError)
+		return
+	}
+
+	result, err := service.RunFusionEngine(c.Request.Context(), service.FusionEngineRequest{
+		UserID:    relayInfo.UserId,
+		TokenID:   relayInfo.TokenId,
+		TokenName: c.GetString("token_name"),
+		Config:    config,
+		Request:   &request,
+	})
+	if err != nil {
+		if relayInfo.Billing != nil {
+			relayInfo.Billing.Refund(c)
+		}
+		fusionOpenAIError(c, http.StatusBadGateway, err.Error(), types.ErrorCodeBadResponse)
+		return
+	}
+
+	actualQuota, err := service.CalculateFusionServiceQuota(service.BuildFusionBillingInput(result), policy)
+	if err != nil {
+		if relayInfo.Billing != nil {
+			relayInfo.Billing.Refund(c)
+		}
+		fusionOpenAIError(c, http.StatusServiceUnavailable, err.Error(), types.ErrorCodeModelPriceError)
+		return
+	}
+	relayInfo.SetFirstResponseTime()
+	model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, actualQuota)
+	if err := service.SettleBilling(c, relayInfo, actualQuota); err != nil {
+		common.SysError("error settling fusion billing: " + err.Error())
+	}
+	recordFusionConsumeLog(c, relayInfo, result, preConsumedQuota, actualQuota, policy)
+	c.JSON(http.StatusOK, buildFusionChatCompletionResponse(request.Model, result))
 }
 
 func validateFusionKeyStatus(status int) error {

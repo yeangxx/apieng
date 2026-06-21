@@ -8,10 +8,10 @@ This is the working progress board for the Fusion feature. Update this file afte
 |---|---|
 | Product/design scope | Ready |
 | Implementation plan | Ready |
-| Business code changes | Stage 4 complete |
+| Business code changes | Stage 5 complete |
 | Frontend changes | Not started |
-| Security validation | Stage 4 focused validation passed |
-| Current next action | Start Stage 5: relay endpoint |
+| Security validation | Stage 5 focused validation passed |
+| Current next action | Start Stage 6: frontend user and admin UI |
 
 Current source documents:
 
@@ -65,7 +65,7 @@ These decisions are binding for the first implementation pass:
 | 2 | Data models and migrations | Complete | Fusion key/config models migrate on SQLite and ownership tests pass |
 | 3 | Management API | Complete | `/api/fusion` key/config CRUD passes controller tests; test endpoints are mounted and fail closed until engine/billing are available |
 | 4 | Fusion engine and billing | Complete | Parallel candidate, Judge synthesis, Fusion expression billing tests pass |
-| 5 | Relay endpoint | Not started | `/v1/fusion/chat/completions` enforces auth, billing, no direct-key bypass, and returns OpenAI-compatible output |
+| 5 | Relay endpoint | Complete | `/v1/fusion/chat/completions` enforces auth, billing, no direct-key bypass, and returns OpenAI-compatible output |
 | 6 | Frontend user and admin UI | Not started | User key/config pages and admin settings work in the active frontend theme |
 | 7 | Security and compatibility validation | Not started | Existing relay unchanged, Fusion abuse/security checks pass |
 | 8 | Release handoff | Not started | Docs updated with final status, validation evidence, and deployment notes |
@@ -274,12 +274,13 @@ git diff --check -- service docs\fusion: pass
 
 ## Stage 5: Relay Endpoint
 
-State: Not started
+State: Complete
 
 Primary files:
 
 - `controller/fusion.go`
 - `router/relay-router.go`
+- `router/fusion_relay_test.go`
 
 Completion criteria:
 
@@ -297,6 +298,28 @@ Validation:
 
 ```powershell
 go test ./controller ./router ./service ./model ./common -run Fusion -count=1
+```
+
+Implemented behavior:
+
+- `/v1/fusion/chat/completions` is mounted under `TokenAuth`, `SystemPerformanceCheck`, `RouteTag("fusion")`, and `ModelRequestRateLimit`, without `middleware.Distribute()`.
+- Disabled Fusion and missing persistent `CRYPTO_SECRET` fail before raw body parsing, config lookup, key decryption, billing, or upstream calls.
+- Raw request JSON rejects direct upstream credential/routing fields before parsing into `dto.GeneralOpenAIRequest`.
+- V1 rejects unsupported chat fields: `stream=true`, `n>1`, `tools`, `tool_choice`, `functions`, and `function_call`.
+- Token model limits are manually enforced against the Fusion alias because the route bypasses normal channel distribution.
+- The requested Fusion alias is set as `original_model` / `ContextKeyOriginalModel` before relay info and billing setup.
+- Platform service quota is pre-consumed before candidate or Judge calls, then settled or refunded through the existing `BillingSession` path.
+- Successful responses are OpenAI-compatible chat completions using the Fusion alias as `model`.
+- Consume logs use `channel_id=0`, `other.fusion=true`, candidate/Judge metadata, service quota fields, and no candidate text or stored API key material.
+- Existing `/v1/chat/completions` remains on the normal relay route and channel distribution path.
+
+Validation result recorded on 2026-06-21:
+
+```text
+go test ./controller ./router ./service ./model ./common -run Fusion -count=1: pass
+git diff --check -- controller router docs\fusion: pass
+go test ./controller ./router ./service ./model ./common -count=1: fails in existing non-Fusion service test TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode, expected 2 actual 3
+go test ./service -run TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode -count=1: pass
 ```
 
 ## Stage 6: Frontend User And Admin UI

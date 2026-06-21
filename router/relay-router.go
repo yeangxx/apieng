@@ -66,6 +66,14 @@ func SetRelayRouter(router *gin.Engine) {
 	{
 		playgroundRouter.POST("/chat/completions", controller.Playground)
 	}
+	fusionRouter := router.Group("/v1/fusion")
+	fusionRouter.Use(middleware.RouteTag("fusion"))
+	fusionRouter.Use(middleware.SystemPerformanceCheck())
+	fusionRouter.Use(middleware.TokenAuth())
+	fusionRouter.Use(middleware.ModelRequestRateLimit())
+	{
+		fusionRouter.POST("/chat/completions", controller.FusionChatCompletions)
+	}
 	relayV1Router := router.Group("/v1")
 	relayV1Router.Use(middleware.RouteTag("relay"))
 	relayV1Router.Use(middleware.SystemPerformanceCheck())

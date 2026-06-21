@@ -887,7 +887,7 @@ ok  	github.com/QuantumNous/new-api/service
 - Modify: `controller/fusion.go`
 - Modify: `router/relay-router.go`
 
-- [ ] **Step 1: Add relay controller**
+- [x] **Step 1: Add relay controller**
 
 Add:
 
@@ -934,7 +934,7 @@ Required behavior:
 - Refund on failure.
 - Write consume log with `channel_id=0` and `other.fusion=true`.
 
-- [ ] **Step 2: Mount route**
+- [x] **Step 2: Mount route**
 
 Modify `router/relay-router.go`:
 
@@ -951,7 +951,7 @@ fusionRouter.Use(middleware.ModelRequestRateLimit())
 
 Do not add `middleware.Distribute()`.
 
-- [ ] **Step 3: Run focused backend tests**
+- [x] **Step 3: Run focused backend tests**
 
 Run:
 
