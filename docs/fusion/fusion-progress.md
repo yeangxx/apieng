@@ -8,10 +8,10 @@ This is the working progress board for the Fusion feature. Update this file afte
 |---|---|
 | Product/design scope | Ready |
 | Implementation plan | Ready |
-| Business code changes | Stage 2 complete |
+| Business code changes | Stage 3 complete |
 | Frontend changes | Not started |
-| Security validation | Stage 1 focused validation passed |
-| Current next action | Start Stage 3: management API |
+| Security validation | Stage 3 focused validation passed |
+| Current next action | Start Stage 4: Fusion engine and billing |
 
 Current source documents:
 
@@ -63,7 +63,7 @@ These decisions are binding for the first implementation pass:
 | 0 | Planning baseline | Complete | Docs exist, no stale open decisions, diff check passes |
 | 1 | Secret, settings, and base URL guard | Complete | Explicit crypto-secret guard, Fusion settings, SSRF validation tests pass |
 | 2 | Data models and migrations | Complete | Fusion key/config models migrate on SQLite and ownership tests pass |
-| 3 | Management API | Not started | `/api/fusion` key/config CRUD and billed test endpoints pass controller tests |
+| 3 | Management API | Complete | `/api/fusion` key/config CRUD passes controller tests; test endpoints are mounted and fail closed until engine/billing are available |
 | 4 | Fusion engine and billing | Not started | Parallel candidate, Judge synthesis, Fusion expression billing tests pass |
 | 5 | Relay endpoint | Not started | `/v1/fusion/chat/completions` enforces auth, billing, no direct-key bypass, and returns OpenAI-compatible output |
 | 6 | Frontend user and admin UI | Not started | User key/config pages and admin settings work in the active frontend theme |
@@ -186,7 +186,7 @@ go test ./model -run Fusion -count=1: pass
 
 ## Stage 3: Management API
 
-State: Not started
+State: Complete
 
 Primary files:
 
@@ -200,14 +200,28 @@ Completion criteria:
 - `/api/fusion/keys` supports list/create/update/delete under `middleware.UserAuth()`.
 - `/api/fusion/configs` supports list/create/update/delete under `middleware.UserAuth()`.
 - API responses never return plaintext keys, ciphertext, or complete fingerprints.
-- Key/config test endpoints require Fusion enabled, persistent `CRYPTO_SECRET`, ownership checks, rate limits, pre-consume billing, and sanitized errors.
+- Key/config test endpoints are mounted under `middleware.UserAuth()` and fail closed until Stage 4/5 provide the shared billing and execution path.
 - Key test does not accept arbitrary request body passthrough.
-- Config test runs through the same billing and execution path as the Fusion relay.
+- Config test must be wired through the same billing and execution path as the Fusion relay before release.
+
+Implemented behavior:
+
+- `dto/fusion.go` defines separate request/response DTOs so encrypted key material and full fingerprints are never serialized.
+- `controller/fusion.go` validates user ownership, max key/config counts, provider type, key status, model allowlists, model alias format, base URL policy, duplicate key fingerprints, duplicate config aliases, and key-in-use deletion.
+- `router/fusion-router.go` registers `/api/fusion/keys` and `/api/fusion/configs` under `middleware.UserAuth()`.
+- Key create and key update with a new plaintext key require explicit persistent `CRYPTO_SECRET`.
+- Key/config test endpoints require `fusion_setting.enabled=true` and persistent `CRYPTO_SECRET`, then return a clear not-implemented error without decrypting keys or calling upstream.
 
 Validation:
 
 ```powershell
 go test ./controller ./router ./model ./common -run Fusion -count=1
+```
+
+Validation result recorded on 2026-06-21:
+
+```text
+go test ./controller ./router ./model ./common -run Fusion -count=1: pass
 ```
 
 ## Stage 4: Fusion Engine And Billing

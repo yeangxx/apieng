@@ -135,3 +135,47 @@ func CountFusionAPIKeysByUserId(userId int) (int64, error) {
 	err := DB.Model(&FusionAPIKey{}).Where("user_id = ?", userId).Count(&total).Error
 	return total, err
 }
+
+func IsFusionAPIKeyFingerprintDuplicated(userId int, id int, fingerprint string) (bool, error) {
+	fingerprint = strings.TrimSpace(fingerprint)
+	if userId == 0 || fingerprint == "" {
+		return false, nil
+	}
+	var total int64
+	err := DB.Model(&FusionAPIKey{}).
+		Where("user_id = ? AND key_fingerprint = ? AND id <> ?", userId, fingerprint, id).
+		Count(&total).Error
+	return total > 0, err
+}
+
+func (key *FusionAPIKey) Insert() error {
+	key.Normalize()
+	return DB.Create(key).Error
+}
+
+func (key *FusionAPIKey) Update() error {
+	key.Normalize()
+	return DB.Model(&FusionAPIKey{}).
+		Where("id = ? AND user_id = ?", key.Id, key.UserId).
+		Select(
+			"name",
+			"provider",
+			"base_url",
+			"default_model",
+			"models",
+			"api_key_ciphertext",
+			"api_key_hint",
+			"key_fingerprint",
+			"status",
+			"last_error",
+		).
+		Updates(key).Error
+}
+
+func DeleteFusionAPIKeyByUserAndId(userId int, id int) error {
+	key, err := GetFusionAPIKeyByUserAndId(userId, id)
+	if err != nil {
+		return err
+	}
+	return DB.Delete(key).Error
+}

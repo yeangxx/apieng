@@ -210,3 +210,48 @@ func CountFusionConfigsByUserId(userId int) (int64, error) {
 	err := DB.Model(&FusionConfig{}).Where("user_id = ?", userId).Count(&total).Error
 	return total, err
 }
+
+func IsFusionConfigAliasDuplicated(userId int, id int, alias string) (bool, error) {
+	alias = strings.TrimSpace(alias)
+	if userId == 0 || alias == "" {
+		return false, nil
+	}
+	var total int64
+	err := DB.Model(&FusionConfig{}).
+		Where("user_id = ? AND model_alias = ? AND id <> ?", userId, alias, id).
+		Count(&total).Error
+	return total > 0, err
+}
+
+func (config *FusionConfig) Insert() error {
+	config.Normalize()
+	return DB.Create(config).Error
+}
+
+func (config *FusionConfig) Update() error {
+	config.Normalize()
+	return DB.Model(&FusionConfig{}).
+		Where("id = ? AND user_id = ?", config.Id, config.UserId).
+		Updates(map[string]interface{}{
+			"name":              config.Name,
+			"model_alias":       config.ModelAlias,
+			"enabled":           config.Enabled,
+			"candidate_key_ids": config.CandidateKeyIDs,
+			"candidate_models":  config.CandidateModels,
+			"judge_key_id":      config.JudgeKeyID,
+			"judge_model":       config.JudgeModel,
+			"strategy":          config.Strategy,
+			"timeout_ms":        config.TimeoutMS,
+			"max_parallel":      config.MaxParallel,
+			"min_successes":     config.MinSuccesses,
+			"judge_prompt":      config.JudgePrompt,
+		}).Error
+}
+
+func DeleteFusionConfigByUserAndId(userId int, id int) error {
+	config, err := GetFusionConfigByUserAndId(userId, id)
+	if err != nil {
+		return err
+	}
+	return DB.Delete(config).Error
+}
