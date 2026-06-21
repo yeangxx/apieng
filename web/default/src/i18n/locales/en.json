@@ -4701,6 +4701,7 @@
     "Users call the model on the left. The platform forwards the request to the upstream model on the right.": "Users call the model on the left. The platform forwards the request to the upstream model on the right.",
     "Users can enter any upstream URL, but admin base URL policy still applies.": "Users can enter any upstream URL, but admin base URL policy still applies.",
     "Users can prepare keys and configs, but test and relay execution require an admin to enable Fusion.": "Users can prepare keys and configs, but test and relay execution require an admin to enable Fusion.",
+    "Users can prepare keys and configs, but relay execution requires an admin to enable Fusion.": "Users can prepare keys and configs, but relay execution requires an admin to enable Fusion.",
     "Users must wait for a successful drawing before upscales or variations.": "Users must wait for a successful drawing before upscales or variations.",
     "Users only see groups marked as user selectable. Non-selectable groups can still be assigned by administrators.": "Users only see groups marked as user selectable. Non-selectable groups can still be assigned by administrators.",
     "uses": "uses",

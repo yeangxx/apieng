@@ -4701,6 +4701,7 @@
     "Users call the model on the left. The platform forwards the request to the upstream model on the right.": "Người dùng gọi mô hình bên trái. Nền tảng chuyển tiếp yêu cầu đến mô hình thượng nguồn bên phải.",
     "Users can enter any upstream URL, but admin base URL policy still applies.": "Người dùng có thể nhập bất kỳ URL thượng nguồn nào, nhưng chính sách Base URL của quản trị viên vẫn áp dụng.",
     "Users can prepare keys and configs, but test and relay execution require an admin to enable Fusion.": "Người dùng có thể chuẩn bị khóa và cấu hình, nhưng kiểm tra và thực thi relay cần quản trị viên bật Fusion.",
+    "Users can prepare keys and configs, but relay execution requires an admin to enable Fusion.": "Người dùng có thể chuẩn bị khóa và cấu hình, nhưng thực thi relay cần quản trị viên bật Fusion.",
     "Users must wait for a successful drawing before upscales or variations.": "Người dùng phải chờ vẽ thành công trước khi upscale hoặc biến thể.",
     "Users only see groups marked as user selectable. Non-selectable groups can still be assigned by administrators.": "Người dùng chỉ thấy các nhóm được đánh dấu là có thể chọn. Nhóm không thể chọn vẫn có thể do quản trị viên gán.",
     "uses": "sử dụng",

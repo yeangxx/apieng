@@ -47,7 +47,6 @@ Create frontend files:
 - `web/default/src/features/fusion/components/fusion-key-drawer.tsx`
 - `web/default/src/features/fusion/components/fusion-configs-table.tsx`
 - `web/default/src/features/fusion/components/fusion-config-drawer.tsx`
-- `web/default/src/features/fusion/components/fusion-test-dialog.tsx`
 
 Modify frontend files:
 
@@ -541,13 +540,12 @@ Controller rules:
 - On missing `CRYPTO_SECRET`, return HTTP 503 with message `CRYPTO_SECRET is required for Fusion`.
 - Build a base URL policy from `setting/fusion_setting`, then validate `base_url` with `common.ValidateFusionBaseURL` before saving.
 - Validate model overrides against each saved key's model allowlist.
-- Key and config test endpoints are execution paths:
-  - Require `fusion_setting.enabled=true`.
-  - Require `common.HasPersistentCryptoSecret()`.
-  - Apply strict per-user rate limits.
-  - Reject arbitrary request body passthrough and raw upstream credentials.
-  - Pre-consume platform quota before upstream I/O.
-  - Settle/refund through the same billing path as `/v1/fusion/chat/completions`.
+- Key and config test endpoints are excluded from v1 user-facing behavior:
+  - Backend stubs may remain mounted for compatibility.
+  - Stubs must require `fusion_setting.enabled=true` and `common.HasPersistentCryptoSecret()` before lookup.
+  - Stubs must return `501` without decrypting keys, calling upstream, or billing.
+  - The default frontend must not expose key/config test controls.
+  - If live testing is reintroduced later, it must use the same billing and execution path as `/v1/fusion/chat/completions`.
 
 - [x] **Step 3: Mount routes**
 
@@ -631,7 +629,6 @@ fusion_setting.billing_expr=max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 +
 fusion_setting.minimum_quota=1
 fusion_setting.charge_failed_candidates=false
 fusion_setting.failed_candidate_quota=0
-fusion_setting.key_test_quota=1
 fusion_setting.max_judge_input_tokens=128000
 fusion_setting.max_candidate_output_chars=20000
 fusion_setting.allow_private_base_url=false
@@ -984,12 +981,10 @@ export async function getFusionKeys()
 export async function createFusionKey(data: FusionKeyFormValues)
 export async function updateFusionKey(id: number, data: FusionKeyFormValues)
 export async function deleteFusionKey(id: number)
-export async function testFusionKey(id: number)
 export async function getFusionConfigs()
 export async function createFusionConfig(data: FusionConfigFormValues)
 export async function updateFusionConfig(id: number, data: FusionConfigFormValues)
 export async function deleteFusionConfig(id: number)
-export async function testFusionConfig(id: number, prompt: string)
 ```
 
 - [x] **Step 2: Build page**
@@ -1021,8 +1016,8 @@ Add an admin-visible settings section after backend `fusion_setting` option keys
 Controls:
 
 - Enable/disable switch for `fusion_setting.enabled`.
-- Billing expression editor with smoke-test validation.
-- Minimum quota and key-test quota inputs.
+- Billing expression editor with validation.
+- Minimum quota input.
 - Failed candidate charging toggle and failed-candidate quota input.
 - Max keys/configs/candidates/parallelism inputs.
 - Default and max timeout inputs.
@@ -1034,7 +1029,7 @@ Admin UI rules:
 
 - Do not let an invalid expression replace the last valid expression.
 - Display a warning when `CRYPTO_SECRET` is not explicitly configured.
-- Disable test/execution buttons when Fusion is globally disabled.
+- Keep relay execution disabled when Fusion is globally disabled.
 - Backend remains the source of truth; frontend checks are convenience only.
 
 - [x] **Step 5: Confirm active frontend theme**
@@ -1261,7 +1256,7 @@ Stage 7 result:
 
 ```text
 Current implementation is fail-closed: both test endpoints require Fusion enabled and persistent CRYPTO_SECRET before lookup, then return 501 without decrypting keys or calling upstream.
-Billed execution for test endpoints is not implemented yet and remains a release gap before those buttons can perform live provider tests.
+The frontend no longer exposes key/config test controls in v1.
 ```
 
 - [x] **Step 11: Verify failed-candidate charging policy**
@@ -1376,8 +1371,8 @@ Confirm the docs state:
 
 ```text
 /v1/fusion/chat/completions is implemented and billed.
-Key/config test endpoints are mounted but fail closed with 501.
-Live billed test execution remains a release gap.
+Key/config test endpoints are non-user-facing fail-closed stubs.
+Live billed test execution is excluded from v1.
 ```
 
 - [x] **Step 3: Update progress tracker**
@@ -1386,7 +1381,7 @@ Update `docs/fusion/fusion-progress.md` so:
 
 ```text
 Stage 8 = Complete
-Current next action = release gate decision for billed key/config test endpoints or MVP ship with fail-closed test controls
+Current next action = prepare MVP rollout with key/config live test execution excluded from v1
 ```
 
 - [x] **Step 4: Validate docs and git status**
@@ -1419,7 +1414,7 @@ Fusion docs are separated from unrelated local files
 - `SessionSecret` fallback is rejected for Fusion secret storage.
 - `fusion_setting.enabled=false` blocks execution before key decryption and upstream calls.
 - Saved user keys are not directly callable outside enabled Fusion configs.
-- Key/config test endpoints are gated and fail closed; billed test execution is not implemented yet and remains a release gap.
+- Key/config test endpoints are non-user-facing fail-closed stubs; billed test execution is excluded from v1.
 - Platform service fee is charged before upstream calls.
 - Platform service fee is expression-configured by admin.
 - Fusion billing uses Fusion-specific variables and quota-unit output, not tiered provider-price conversion.

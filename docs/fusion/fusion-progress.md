@@ -11,7 +11,7 @@ This is the working progress board for the Fusion feature. Update this file afte
 | Business code changes | Stage 8 release handoff complete |
 | Frontend changes | Stage 6 complete |
 | Security validation | Stage 7 focused tests passed; Codex Security diff scan complete with 0 unresolved findings |
-| Current next action | Decide release gate: implement billed key/config test endpoints or ship MVP with fail-closed test controls |
+| Current next action | Prepare MVP rollout; key/config live test execution is excluded from v1 |
 
 Current source documents:
 
@@ -41,7 +41,7 @@ Fusion v1 intentionally does not include:
 - Tool/function calling passthrough.
 - `best_of` or `vote` strategy execution.
 - Admin `Channel` fallback when user keys fail.
-- Live key/config test execution; test endpoints are mounted but fail closed with `501` until billed test execution is implemented.
+- Live key/config test execution and dashboard test buttons.
 
 ## Locked MVP Decisions
 
@@ -65,7 +65,7 @@ These decisions are binding for the first implementation pass:
 | 0 | Planning baseline | Complete | Docs exist, no stale open decisions, diff check passes |
 | 1 | Secret, settings, and base URL guard | Complete | Explicit crypto-secret guard, Fusion settings, SSRF validation tests pass |
 | 2 | Data models and migrations | Complete | Fusion key/config models migrate on SQLite and ownership tests pass |
-| 3 | Management API | Complete | `/api/fusion` key/config CRUD passes controller tests; test endpoints are mounted and fail closed until engine/billing are available |
+| 3 | Management API | Complete | `/api/fusion` key/config CRUD passes controller tests; test endpoints are non-user-facing fail-closed stubs |
 | 4 | Fusion engine and billing | Complete | Parallel candidate, Judge synthesis, Fusion expression billing tests pass |
 | 5 | Relay endpoint | Complete | `/v1/fusion/chat/completions` enforces auth, billing, no direct-key bypass, and returns OpenAI-compatible output |
 | 6 | Frontend user and admin UI | Complete | User key/config pages and admin settings work in the active frontend theme |
@@ -202,9 +202,9 @@ Completion criteria:
 - `/api/fusion/keys` supports list/create/update/delete under `middleware.UserAuth()`.
 - `/api/fusion/configs` supports list/create/update/delete under `middleware.UserAuth()`.
 - API responses never return plaintext keys, ciphertext, or complete fingerprints.
-- Key/config test endpoints are mounted under `middleware.UserAuth()` and fail closed until Stage 4/5 provide the shared billing and execution path.
+- Key/config test endpoints are mounted under `middleware.UserAuth()` but remain non-user-facing fail-closed stubs in v1.
 - Key test does not accept arbitrary request body passthrough.
-- Config test must be wired through the same billing and execution path as the Fusion relay before release.
+- Live config testing is excluded from v1; if reintroduced later, it must use the same billing and execution path as the Fusion relay.
 
 Implemented behavior:
 
@@ -212,7 +212,7 @@ Implemented behavior:
 - `controller/fusion.go` validates user ownership, max key/config counts, provider type, key status, model allowlists, model alias format, base URL policy, duplicate key fingerprints, duplicate config aliases, and key-in-use deletion.
 - `router/fusion-router.go` registers `/api/fusion/keys` and `/api/fusion/configs` under `middleware.UserAuth()`.
 - Key create and key update with a new plaintext key require explicit persistent `CRYPTO_SECRET`.
-- Key/config test endpoints require `fusion_setting.enabled=true` and persistent `CRYPTO_SECRET`, then return a clear not-implemented error without decrypting keys or calling upstream.
+- Key/config test endpoints require `fusion_setting.enabled=true` and persistent `CRYPTO_SECRET`, then return a clear not-implemented error without decrypting keys or calling upstream. They are not exposed in the v1 frontend.
 
 Validation:
 
@@ -344,10 +344,10 @@ Primary files:
 
 Completion criteria:
 
-- User can create, list, edit, disable, delete Fusion upstream keys, and see fail-closed test controls.
-- User can create, list, edit, disable, delete Fusion configs, and see fail-closed test controls.
+- User can create, list, edit, disable, and delete Fusion upstream keys.
+- User can create, list, edit, disable, and delete Fusion configs.
 - UI never reveals plaintext keys after save.
-- Admin can configure Fusion enable switch, billing expression, minimum quota, key-test quota, failed-candidate policy, caps, domain policy, and port policy.
+- Admin can configure Fusion enable switch, billing expression, minimum quota, failed-candidate policy, caps, domain policy, and port policy.
 - UI shows a clear warning when `CRYPTO_SECRET` is not explicitly configured.
 - Active frontend theme is handled. If classic is active and no classic page exists, Fusion navigation is hidden there.
 - All visible text uses i18n.
@@ -362,8 +362,8 @@ bun run lint
 Implementation notes:
 
 - Added the default frontend `/fusion` route with tabs for upstream keys and Fusion configs.
-- Added user CRUD/test UI for Fusion upstream keys and configs. Saved key plaintext is never shown after create/update.
-- Test controls exist in the UI, but the backend test endpoints are fail-closed with `501`; live billed test execution remains a release gap.
+- Added user CRUD UI for Fusion upstream keys and configs. Saved key plaintext is never shown after create/update.
+- Removed dashboard test controls from v1. Operators can validate the formal Fusion relay path directly after development.
 - Added sidebar navigation for the default frontend only; no classic frontend navigation was added.
 - Added admin Fusion settings under Models & Routing, including enablement, service billing expression, failure-charging policy, execution caps, and base URL domain/port policy.
 - Added `/api/status` frontend-safe flags for `fusion_enabled` and `fusion_crypto_secret_configured`.
@@ -413,7 +413,7 @@ Implemented behavior:
 - Kept fallback validation for non-`*http.Transport` clients.
 - Redacted known upstream API keys from sanitized upstream error text.
 - Added regression tests for model allowlists, missing `CRYPTO_SECRET` before lookup, nested direct credential rejection, invalid billing expressions before upstream I/O, protected connect-time DNS/IP validation, upstream API-key redaction, and normal `/v1/chat/completions` route registration.
-- Key/config test endpoints remain fail-closed with `501 not implemented`; they cannot be used as a free execution bypass, but billed execution for those test buttons remains a Stage 8/release-gap item.
+- Key/config test endpoints remain fail-closed with `501 not implemented` and are not exposed in the v1 frontend; they cannot be used as a free execution bypass.
 - No live real-provider smoke test was run. Existing relay compatibility was covered by route/middleware source inspection and the new route registration regression test, not by a configured production channel request.
 
 Validation:
@@ -464,7 +464,7 @@ Implemented behavior:
 
 - Added `docs/fusion/fusion-release-handoff.md` with release status, required settings, billing notes, base URL risk, release gaps, validation evidence, rollout checklist, and rollback steps.
 - Updated the Fusion docs index to include the release handoff.
-- Reconciled implementation status with current behavior: `/v1/fusion/chat/completions` is implemented and billed; key/config test endpoints remain fail-closed and are not live billed execution paths.
+- Reconciled implementation status with current behavior: `/v1/fusion/chat/completions` is implemented and billed; key/config live test execution is excluded from v1.
 - Recorded that broad backend test failures are existing non-Fusion `service/channel_affinity_usage_cache_test.go` state-isolation issues.
 
 Validation:
@@ -514,7 +514,7 @@ Fusion implementation handoff is done when all of these are true:
 
 Release gaps that remain explicit:
 
-- Key/config test endpoints are not live billed execution paths; they fail closed with `501`.
+- Key/config live test execution is not part of v1; backend stubs fail closed with `501` and the frontend no longer exposes test controls.
 - No live real-provider smoke test has been run for `/v1/fusion/chat/completions`.
 - Broad backend test sweeps still expose existing non-Fusion channel affinity usage cache test isolation failures.
 - Full frontend lint still exposes existing non-Fusion lint debt outside the Fusion change set.

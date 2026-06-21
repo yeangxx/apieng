@@ -204,7 +204,6 @@ export type ModelSettings = {
   'fusion_setting.minimum_quota': number
   'fusion_setting.charge_failed_candidates': boolean
   'fusion_setting.failed_candidate_quota': number
-  'fusion_setting.key_test_quota': number
   'fusion_setting.max_judge_input_tokens': number
   'fusion_setting.max_candidate_output_chars': number
   'fusion_setting.allow_private_base_url': boolean

@@ -86,7 +86,6 @@ const fusionSettingsSchema = z.object({
     minimum_quota: z.coerce.number().int().min(0),
     charge_failed_candidates: z.boolean(),
     failed_candidate_quota: z.coerce.number().int().min(0),
-    key_test_quota: z.coerce.number().int().min(0),
     max_judge_input_tokens: z.coerce.number().int().min(1),
     max_candidate_output_chars: z.coerce.number().int().min(1),
     allow_private_base_url: z.boolean(),
@@ -112,7 +111,6 @@ type FlatFusionSettings = {
   'fusion_setting.minimum_quota': number
   'fusion_setting.charge_failed_candidates': boolean
   'fusion_setting.failed_candidate_quota': number
-  'fusion_setting.key_test_quota': number
   'fusion_setting.max_judge_input_tokens': number
   'fusion_setting.max_candidate_output_chars': number
   'fusion_setting.allow_private_base_url': boolean
@@ -161,7 +159,6 @@ function flattenFusionSettings(
     'fusion_setting.minimum_quota': settings.minimum_quota,
     'fusion_setting.charge_failed_candidates': settings.charge_failed_candidates,
     'fusion_setting.failed_candidate_quota': settings.failed_candidate_quota,
-    'fusion_setting.key_test_quota': settings.key_test_quota,
     'fusion_setting.max_judge_input_tokens': settings.max_judge_input_tokens,
     'fusion_setting.max_candidate_output_chars':
       settings.max_candidate_output_chars,
@@ -317,31 +314,13 @@ export function FusionSettingsCard(props: FusionSettingsCardProps) {
             )}
           />
 
-          <div className='grid gap-4 lg:col-span-2 lg:grid-cols-4'>
+          <div className='grid gap-4 lg:col-span-2 lg:grid-cols-3'>
             <FormField
               control={form.control}
               name='fusion_setting.minimum_quota'
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>{t('Minimum Quota')}</FormLabel>
-                  <FormControl>
-                    <Input
-                      {...field}
-                      value={Number(field.value ?? 0)}
-                      type='number'
-                      min={0}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='fusion_setting.key_test_quota'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('Key Test Quota')}</FormLabel>
                   <FormControl>
                     <Input
                       {...field}

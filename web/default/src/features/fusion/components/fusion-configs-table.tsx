@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Edit, FlaskConical, Trash2 } from 'lucide-react'
+import { Edit, Trash2 } from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
@@ -32,10 +32,8 @@ type FusionConfigsTableProps = {
   configs: FusionConfig[]
   keys: FusionAPIKey[]
   isLoading: boolean
-  testDisabled: boolean
   onEdit: (config: FusionConfig) => void
   onDelete: (config: FusionConfig) => void
-  onTest: (config: FusionConfig) => void
 }
 
 export function FusionConfigsTable(props: FusionConfigsTableProps) {
@@ -142,20 +140,9 @@ export function FusionConfigsTable(props: FusionConfigsTableProps) {
       id: 'actions',
       header: t('Actions'),
       className: 'text-right',
-      cellClassName: 'w-36',
+      cellClassName: 'w-24',
       cell: (config) => (
         <div className='flex items-center justify-end gap-1'>
-          <Button
-            type='button'
-            variant='ghost'
-            size='icon-sm'
-            title={t('Test')}
-            disabled={props.testDisabled || !config.enabled}
-            onClick={() => props.onTest(config)}
-          >
-            <FlaskConical />
-            <span className='sr-only'>{t('Test')}</span>
-          </Button>
           <Button
             type='button'
             variant='ghost'

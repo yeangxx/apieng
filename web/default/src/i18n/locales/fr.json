@@ -4701,6 +4701,7 @@
     "Users call the model on the left. The platform forwards the request to the upstream model on the right.": "Les utilisateurs appellent le modèle à gauche. La plateforme transmet la requête au modèle amont à droite.",
     "Users can enter any upstream URL, but admin base URL policy still applies.": "Les utilisateurs peuvent saisir n'importe quelle URL amont, mais la politique administrateur des URL de base reste appliquée.",
     "Users can prepare keys and configs, but test and relay execution require an admin to enable Fusion.": "Les utilisateurs peuvent préparer clés et configurations, mais les tests et l'exécution relais nécessitent l'activation de Fusion par un administrateur.",
+    "Users can prepare keys and configs, but relay execution requires an admin to enable Fusion.": "Les utilisateurs peuvent préparer clés et configurations, mais l'exécution relais nécessite l'activation de Fusion par un administrateur.",
     "Users must wait for a successful drawing before upscales or variations.": "Les utilisateurs doivent attendre une génération réussie avant les upscales ou variations.",
     "Users only see groups marked as user selectable. Non-selectable groups can still be assigned by administrators.": "Les utilisateurs ne voient que les groupes marqués comme sélectionnables. Les groupes non sélectionnables peuvent toujours être attribués par les administrateurs.",
     "uses": "utilisations",

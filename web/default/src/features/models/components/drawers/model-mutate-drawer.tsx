@@ -232,7 +232,6 @@ export function ModelMutateDrawer({
       'fusion_setting.minimum_quota': 1,
       'fusion_setting.charge_failed_candidates': false,
       'fusion_setting.failed_candidate_quota': 0,
-      'fusion_setting.key_test_quota': 1,
       'fusion_setting.max_judge_input_tokens': 128000,
       'fusion_setting.max_candidate_output_chars': 20000,
       'fusion_setting.allow_private_base_url': false,

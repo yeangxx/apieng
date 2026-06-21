@@ -61,11 +61,9 @@ export const FUSION_ERROR_MESSAGES = {
   CREATE_KEY_FAILED: 'Failed to create Fusion key',
   UPDATE_KEY_FAILED: 'Failed to update Fusion key',
   DELETE_KEY_FAILED: 'Failed to delete Fusion key',
-  TEST_KEY_FAILED: 'Failed to test Fusion key',
   CREATE_CONFIG_FAILED: 'Failed to create Fusion config',
   UPDATE_CONFIG_FAILED: 'Failed to update Fusion config',
   DELETE_CONFIG_FAILED: 'Failed to delete Fusion config',
-  TEST_CONFIG_FAILED: 'Failed to test Fusion config',
   UNEXPECTED: 'An unexpected error occurred',
 } as const
 
@@ -76,5 +74,4 @@ export const FUSION_SUCCESS_MESSAGES = {
   CONFIG_CREATED: 'Fusion config created successfully',
   CONFIG_UPDATED: 'Fusion config updated successfully',
   CONFIG_DELETED: 'Fusion config deleted successfully',
-  TEST_REQUEST_SENT: 'Fusion test request sent',
 } as const

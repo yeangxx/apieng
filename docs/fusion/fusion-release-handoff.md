@@ -99,14 +99,15 @@ Rejected or not implemented in the MVP:
 - Tool/function calling passthrough.
 - `best_of` or `vote` strategy execution.
 - Admin `Channel` fallback when user keys fail.
+- Dashboard test buttons and live key/config test execution.
 
 ## Release Gaps
 
-These are intentionally not represented as complete release behavior:
+These are intentionally not part of the v1 release:
 
-- `POST /api/fusion/keys/:id/test` is mounted but fail-closed with `501`; it does not decrypt keys, call upstream, or bill.
-- `POST /api/fusion/configs/:id/test` is mounted but fail-closed with `501`; it does not decrypt keys, call upstream, or bill.
-- The default frontend contains test controls, but live billed test execution is not available until the backend test endpoints are implemented.
+- `POST /api/fusion/keys/:id/test` is a non-user-facing fail-closed stub. It returns `501` and does not decrypt keys, call upstream, or bill.
+- `POST /api/fusion/configs/:id/test` is a non-user-facing fail-closed stub. It returns `501` and does not decrypt keys, call upstream, or bill.
+- The default frontend does not expose key/config test controls.
 - No live real-provider smoke test was run during Stage 7/8. Validation used fake upstream servers, focused tests, route registration checks, and source inspection.
 - The classic frontend does not expose Fusion navigation.
 

@@ -53,11 +53,6 @@ export async function deleteFusionKey(id: number): Promise<ApiResponse> {
   return res.data
 }
 
-export async function testFusionKey(id: number): Promise<ApiResponse> {
-  const res = await api.post(`/api/fusion/keys/${id}/test`)
-  return res.data
-}
-
 export async function getFusionConfigs(): Promise<
   ApiResponse<FusionListResponse<FusionConfig>>
 > {
@@ -82,13 +77,5 @@ export async function updateFusionConfig(
 
 export async function deleteFusionConfig(id: number): Promise<ApiResponse> {
   const res = await api.delete(`/api/fusion/configs/${id}`)
-  return res.data
-}
-
-export async function testFusionConfig(
-  id: number,
-  prompt: string
-): Promise<ApiResponse> {
-  const res = await api.post(`/api/fusion/configs/${id}/test`, { prompt })
   return res.data
 }

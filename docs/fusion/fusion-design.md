@@ -91,7 +91,6 @@ Users maintain a list of upstream keys:
 - Encrypted API key
 - Key hint and fingerprint
 - Status
-- Last test result
 
 Initial provider support:
 
@@ -255,7 +254,7 @@ CRYPTO_SECRET
 
 If `CRYPTO_SECRET` is not explicitly set:
 
-- Fusion key create/update/test APIs return HTTP 503 with code `fusion_crypto_secret_required`.
+- Fusion key create/update APIs return HTTP 503 with code `fusion_crypto_secret_required`.
 - The frontend shows a setup warning.
 - Existing non-Fusion features remain unaffected.
 
@@ -301,22 +300,14 @@ GET    /api/fusion/keys
 POST   /api/fusion/keys
 PUT    /api/fusion/keys/:id
 DELETE /api/fusion/keys/:id
-POST   /api/fusion/keys/:id/test
 ```
 
-Key test is an execution path, not a free direct proxy. It must:
-
-- Require `fusion_setting.enabled=true`.
-- Require explicit persistent `CRYPTO_SECRET`.
-- Use only the saved key, saved base URL, and saved/default model.
-- Reject request-supplied `api_key`, `base_url`, `model`, `messages`, or arbitrary body passthrough.
-- Charge `fusion_setting.key_test_quota` or the configured minimum service quota before calling upstream.
-- Apply strict per-user rate limits and sanitized error storage.
+Live key testing is excluded from v1. The backend may keep a non-user-facing fail-closed stub for compatibility, but the frontend must not expose a key test control.
 
 Current implementation note:
 
 - The key test endpoint is mounted but fail-closed. It requires Fusion enabled and explicit persistent `CRYPTO_SECRET`, then returns `501` without decrypting keys or calling upstream.
-- Billed live key testing remains a release gap before the dashboard test button can execute a provider call.
+- The dashboard does not expose a key test button in v1.
 
 Create request:
 
@@ -343,7 +334,6 @@ List response item:
   "default_model": "gpt-4o-mini",
   "models": ["gpt-4o-mini", "gpt-4.1"],
   "status": 1,
-  "last_test_time": 1760000000,
   "last_error": ""
 }
 ```
@@ -362,15 +352,14 @@ GET    /api/fusion/configs
 POST   /api/fusion/configs
 PUT    /api/fusion/configs/:id
 DELETE /api/fusion/configs/:id
-POST   /api/fusion/configs/:id/test
 ```
 
-Config test is also an execution path. It must run through the same Fusion enable gate, ownership checks, platform pre-consume, upstream execution, settlement/refund, and log path as `/v1/fusion/chat/completions`. It may accept a short test prompt, but it must not accept raw upstream credentials or per-request base URLs.
+Live config testing is excluded from v1. If it is reintroduced later, it must run through the same Fusion enable gate, ownership checks, platform pre-consume, upstream execution, settlement/refund, and log path as `/v1/fusion/chat/completions`.
 
 Current implementation note:
 
 - The config test endpoint is mounted but fail-closed. It requires Fusion enabled and explicit persistent `CRYPTO_SECRET`, then returns `501` without decrypting keys or calling upstream.
-- Billed live config testing remains a release gap before the dashboard test dialog can execute a provider call.
+- The dashboard does not expose a config test dialog in v1.
 
 Create request:
 
@@ -564,7 +553,6 @@ fusion_setting.minimum_quota
 fusion_setting.billing_expr
 fusion_setting.charge_failed_candidates
 fusion_setting.failed_candidate_quota
-fusion_setting.key_test_quota
 fusion_setting.max_judge_input_tokens
 fusion_setting.max_candidate_output_chars
 fusion_setting.allow_private_base_url
@@ -590,7 +578,6 @@ fusion_setting.minimum_quota=1
 fusion_setting.billing_expr=max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 + failed * failed_quota)
 fusion_setting.charge_failed_candidates=false
 fusion_setting.failed_candidate_quota=0
-fusion_setting.key_test_quota=1
 fusion_setting.max_judge_input_tokens=128000
 fusion_setting.max_candidate_output_chars=20000
 fusion_setting.allow_private_base_url=false
@@ -717,7 +704,7 @@ Log `other`:
 }
 ```
 
-Do not log candidate full text by default. A debug test endpoint can return candidate text directly to the authenticated user without persisting it.
+Do not log candidate full text by default.
 
 ## Security Design
 
@@ -817,8 +804,7 @@ Main UI:
 
 - Tab: Upstream Keys
 - Tab: Fusion Configs
-- Dialog: Test Fusion Config
-- Status badges for enabled, disabled, test failed
+- Status badges for enabled and disabled records
 - Masked key display
 - No plaintext key reveal action
 
@@ -838,7 +824,7 @@ Admin UI must expose:
 
 - Enable/disable switch.
 - Billing expression editor with smoke-test validation.
-- Minimum quota, key-test quota, failed-candidate charging toggle, and failed-candidate quota.
+- Minimum quota, failed-candidate charging toggle, and failed-candidate quota.
 - Candidate, parallelism, timeout, Judge input, and candidate output caps.
 - Public/private base URL policy, domain allowlist, and allowed ports.
 
@@ -848,7 +834,7 @@ Required admin behavior:
 
 - `fusion_setting.enabled=false` by default.
 - When disabled, relay execution returns a clear `fusion_disabled` error before key decryption or upstream I/O.
-- Key/config management pages can remain visible with a disabled-state warning, but test and relay execution buttons must be disabled.
+- Key/config management pages can remain visible with a disabled-state warning, but relay execution remains blocked.
 - `fusion_setting.billing_expr` is required when `fusion_setting.billing_mode=expr`; an invalid expression disables execution rather than falling back to free usage.
 - `fusion_setting.charge_failed_candidates` is an explicit operator policy. If enabled, failed candidates can be charged by the expression through `failed`, `failed_prompt`, and `failed_quota`.
 - Saving an invalid Fusion expression must fail validation and must not replace the last valid expression.

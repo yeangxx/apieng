@@ -4701,6 +4701,7 @@
     "Users call the model on the left. The platform forwards the request to the upstream model on the right.": "用户调用左侧的模型。平台将请求转发给右侧的上游模型。",
     "Users can enter any upstream URL, but admin base URL policy still applies.": "用户可以填写任意上游 URL，但管理员 Base URL 策略仍会生效。",
     "Users can prepare keys and configs, but test and relay execution require an admin to enable Fusion.": "用户可以先准备 Key 和配置，但测试和中继执行需要管理员启用 Fusion。",
+    "Users can prepare keys and configs, but relay execution requires an admin to enable Fusion.": "用户可以先准备 Key 和配置，但中继执行需要管理员启用 Fusion。",
     "Users must wait for a successful drawing before upscales or variations.": "用户必须等待成功的绘图完成，才能进行放大或变体。",
     "Users only see groups marked as user selectable. Non-selectable groups can still be assigned by administrators.": "用户只能看到标记为用户可选的分组。不可选分组仍可由管理员分配。",
     "uses": "使用次数",

@@ -16,9 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Edit, FlaskConical, Trash2 } from 'lucide-react'
+import { Edit, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { formatTimestampToDate } from '@/lib/format'
 import { Button } from '@/components/ui/button'
 import {
   DISABLED_ROW_DESKTOP,
@@ -35,10 +34,8 @@ import type { FusionAPIKey } from '../types'
 type FusionKeysTableProps = {
   keys: FusionAPIKey[]
   isLoading: boolean
-  testDisabled: boolean
   onEdit: (key: FusionAPIKey) => void
   onDelete: (key: FusionAPIKey) => void
-  onTest: (key: FusionAPIKey) => void
 }
 
 export function FusionKeysTable(props: FusionKeysTableProps) {
@@ -132,33 +129,12 @@ export function FusionKeysTable(props: FusionKeysTableProps) {
       ),
     },
     {
-      id: 'last_test_time',
-      header: t('Last Test'),
-      cellClassName: 'min-w-40',
-      cell: (key) => (
-        <span className='text-muted-foreground font-mono text-xs'>
-          {formatTimestampToDate(key.last_test_time)}
-        </span>
-      ),
-    },
-    {
       id: 'actions',
       header: t('Actions'),
       className: 'text-right',
-      cellClassName: 'w-36',
+      cellClassName: 'w-24',
       cell: (key) => (
         <div className='flex items-center justify-end gap-1'>
-          <Button
-            type='button'
-            variant='ghost'
-            size='icon-sm'
-            title={t('Test')}
-            disabled={props.testDisabled || key.status !== FUSION_KEY_STATUS.ENABLED}
-            onClick={() => props.onTest(key)}
-          >
-            <FlaskConical />
-            <span className='sr-only'>{t('Test')}</span>
-          </Button>
           <Button
             type='button'
             variant='ghost'

@@ -92,7 +92,6 @@ const MODELS_SECTIONS = [
               settings['fusion_setting.charge_failed_candidates'],
             failed_candidate_quota:
               settings['fusion_setting.failed_candidate_quota'],
-            key_test_quota: settings['fusion_setting.key_test_quota'],
             max_judge_input_tokens:
               settings['fusion_setting.max_judge_input_tokens'],
             max_candidate_output_chars:

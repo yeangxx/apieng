@@ -38,8 +38,6 @@ import {
   deleteFusionKey,
   getFusionConfigs,
   getFusionKeys,
-  testFusionConfig,
-  testFusionKey,
   updateFusionConfig,
   updateFusionKey,
 } from './api'
@@ -47,7 +45,6 @@ import { FusionConfigDrawer } from './components/fusion-config-drawer'
 import { FusionConfigsTable } from './components/fusion-configs-table'
 import { FusionKeyDrawer } from './components/fusion-key-drawer'
 import { FusionKeysTable } from './components/fusion-keys-table'
-import { FusionTestDialog } from './components/fusion-test-dialog'
 import {
   FUSION_ERROR_MESSAGES,
   FUSION_SUCCESS_MESSAGES,
@@ -58,11 +55,6 @@ import type {
   FusionConfig,
   FusionConfigPayload,
 } from './types'
-
-type TestTarget =
-  | { kind: 'key'; item: FusionAPIKey }
-  | { kind: 'config'; item: FusionConfig }
-  | null
 
 const fusionQueryKeys = {
   keys: ['fusion', 'keys'] as const,
@@ -78,11 +70,9 @@ export function Fusion() {
   const [configDrawerOpen, setConfigDrawerOpen] = useState(false)
   const [editingKey, setEditingKey] = useState<FusionAPIKey | undefined>()
   const [editingConfig, setEditingConfig] = useState<FusionConfig | undefined>()
-  const [testTarget, setTestTarget] = useState<TestTarget>(null)
 
   const fusionEnabled = status?.fusion_enabled === true
   const cryptoConfigured = status?.fusion_crypto_secret_configured === true
-  const testDisabled = !fusionEnabled || !cryptoConfigured
 
   const keysQuery = useQuery({
     queryKey: fusionQueryKeys.keys,
@@ -203,23 +193,6 @@ export function Fusion() {
     },
   })
 
-  const testMutation = useMutation({
-    mutationFn: async (prompt: string) => {
-      if (!testTarget) return { success: false, message: t('No test target') }
-      if (testTarget.kind === 'key') return testFusionKey(testTarget.item.id)
-      return testFusionConfig(testTarget.item.id, prompt)
-    },
-    onSuccess: async (result) => {
-      if (!result.success) {
-        toast.error(result.message || t(FUSION_ERROR_MESSAGES.TEST_CONFIG_FAILED))
-        return
-      }
-      toast.success(t(FUSION_SUCCESS_MESSAGES.TEST_REQUEST_SENT))
-      setTestTarget(null)
-      await invalidateFusion()
-    },
-  })
-
   const keys = keysQuery.data ?? []
   const configs = configsQuery.data ?? []
   const activeAction = useMemo(() => {
@@ -278,7 +251,7 @@ export function Fusion() {
                     <AlertTitle>{t('Fusion is disabled')}</AlertTitle>
                     <AlertDescription>
                       {t(
-                        'Users can prepare keys and configs, but test and relay execution require an admin to enable Fusion.'
+                        'Users can prepare keys and configs, but relay execution requires an admin to enable Fusion.'
                       )}
                     </AlertDescription>
                   </Alert>
@@ -315,13 +288,11 @@ export function Fusion() {
                 <FusionKeysTable
                   keys={keys}
                   isLoading={keysQuery.isLoading}
-                  testDisabled={testDisabled}
                   onEdit={(key) => {
                     setEditingKey(key)
                     setKeyDrawerOpen(true)
                   }}
                   onDelete={handleDeleteKey}
-                  onTest={(key) => setTestTarget({ kind: 'key', item: key })}
                 />
               </TabsContent>
               <TabsContent value='configs' className='min-h-0 overflow-auto'>
@@ -329,15 +300,11 @@ export function Fusion() {
                   configs={configs}
                   keys={keys}
                   isLoading={configsQuery.isLoading}
-                  testDisabled={testDisabled}
                   onEdit={(config) => {
                     setEditingConfig(config)
                     setConfigDrawerOpen(true)
                   }}
                   onDelete={handleDeleteConfig}
-                  onTest={(config) =>
-                    setTestTarget({ kind: 'config', item: config })
-                  }
                 />
               </TabsContent>
             </Tabs>
@@ -374,28 +341,6 @@ export function Fusion() {
         }}
       />
 
-      <FusionTestDialog
-        open={testTarget !== null}
-        title={
-          testTarget?.kind === 'key'
-            ? t('Test Fusion Key')
-            : t('Test Fusion Config')
-        }
-        description={
-          testTarget?.kind === 'key'
-            ? t('Send a gated test request for this upstream key.')
-            : t('Send a gated test request for this Fusion config.')
-        }
-        targetName={testTarget?.item.name}
-        kind={testTarget?.kind ?? 'key'}
-        isSubmitting={testMutation.isPending}
-        onOpenChange={(open) => {
-          if (!open) setTestTarget(null)
-        }}
-        onConfirm={async (prompt) => {
-          await testMutation.mutateAsync(prompt)
-        }}
-      />
     </>
   )
 }
