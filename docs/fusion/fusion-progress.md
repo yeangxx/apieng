@@ -8,10 +8,10 @@ This is the working progress board for the Fusion feature. Update this file afte
 |---|---|
 | Product/design scope | Ready |
 | Implementation plan | Ready |
-| Business code changes | Stage 3 complete |
+| Business code changes | Stage 4 complete |
 | Frontend changes | Not started |
-| Security validation | Stage 3 focused validation passed |
-| Current next action | Start Stage 4: Fusion engine and billing |
+| Security validation | Stage 4 focused validation passed |
+| Current next action | Start Stage 5: relay endpoint |
 
 Current source documents:
 
@@ -64,7 +64,7 @@ These decisions are binding for the first implementation pass:
 | 1 | Secret, settings, and base URL guard | Complete | Explicit crypto-secret guard, Fusion settings, SSRF validation tests pass |
 | 2 | Data models and migrations | Complete | Fusion key/config models migrate on SQLite and ownership tests pass |
 | 3 | Management API | Complete | `/api/fusion` key/config CRUD passes controller tests; test endpoints are mounted and fail closed until engine/billing are available |
-| 4 | Fusion engine and billing | Not started | Parallel candidate, Judge synthesis, Fusion expression billing tests pass |
+| 4 | Fusion engine and billing | Complete | Parallel candidate, Judge synthesis, Fusion expression billing tests pass |
 | 5 | Relay endpoint | Not started | `/v1/fusion/chat/completions` enforces auth, billing, no direct-key bypass, and returns OpenAI-compatible output |
 | 6 | Frontend user and admin UI | Not started | User key/config pages and admin settings work in the active frontend theme |
 | 7 | Security and compatibility validation | Not started | Existing relay unchanged, Fusion abuse/security checks pass |
@@ -226,7 +226,7 @@ go test ./controller ./router ./model ./common -run Fusion -count=1: pass
 
 ## Stage 4: Fusion Engine And Billing
 
-State: Not started
+State: Complete
 
 Primary files:
 
@@ -250,6 +250,26 @@ Validation:
 
 ```powershell
 go test ./service -run Fusion -count=1
+```
+
+Implemented behavior:
+
+- `service/fusion.go` runs saved-config-only Fusion execution with bounded parallel candidate calls and a Judge synthesis call.
+- Candidate and Judge calls use user-owned encrypted keys, re-check saved `base_url` against current Fusion SSRF policy, and do not use admin `Channel` distribution.
+- Redirect following is disabled for Fusion upstream calls; 3xx responses are treated as upstream failures.
+- `stream=true`, `n>1`, tools, tool_choice, functions, and function_call are rejected in v1.
+- Missing upstream usage falls back to conservative local token estimates.
+- Failed candidates keep estimated prompt tokens once an upstream request was attempted, so the failed-candidate billing policy can charge them later if enabled.
+- Candidate output is truncated before Judge prompt construction; Judge input is trimmed against the configured token cap.
+- `service/fusion_billing.go` evaluates Fusion-specific expressions where the expression result is already new-api quota units, then applies minimum quota and group ratio.
+- Fusion billing expressions expose only Fusion variables (`cp`, `cc`, `jp`, `jc`, aliases, `failed`, `failed_prompt`, `failed_quota`, `success`, `total`, `min_quota`) and reject tiered provider-price variables such as `p` and `c`.
+
+Validation result recorded on 2026-06-21:
+
+```text
+go test ./service -run Fusion -count=1: pass
+go test ./controller ./router ./service ./model ./common -run Fusion -count=1: pass
+git diff --check -- service docs\fusion: pass
 ```
 
 ## Stage 5: Relay Endpoint
