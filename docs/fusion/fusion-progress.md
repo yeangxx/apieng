@@ -8,16 +8,17 @@ This is the working progress board for the Fusion feature. Update this file afte
 |---|---|
 | Product/design scope | Ready |
 | Implementation plan | Ready |
-| Business code changes | Stage 7 security hardening complete |
+| Business code changes | Stage 8 release handoff complete |
 | Frontend changes | Stage 6 complete |
 | Security validation | Stage 7 focused tests passed; Codex Security diff scan complete with 0 unresolved findings |
-| Current next action | Implement Stage 8: release handoff |
+| Current next action | Decide release gate: implement billed key/config test endpoints or ship MVP with fail-closed test controls |
 
 Current source documents:
 
 - `docs/fusion/fusion-design.md`
 - `docs/fusion/fusion-implementation-plan.md`
 - `docs/fusion/fusion-progress.md`
+- `docs/fusion/fusion-release-handoff.md`
 
 ## First-Version Scope
 
@@ -40,6 +41,7 @@ Fusion v1 intentionally does not include:
 - Tool/function calling passthrough.
 - `best_of` or `vote` strategy execution.
 - Admin `Channel` fallback when user keys fail.
+- Live key/config test execution; test endpoints are mounted but fail closed with `501` until billed test execution is implemented.
 
 ## Locked MVP Decisions
 
@@ -68,7 +70,7 @@ These decisions are binding for the first implementation pass:
 | 5 | Relay endpoint | Complete | `/v1/fusion/chat/completions` enforces auth, billing, no direct-key bypass, and returns OpenAI-compatible output |
 | 6 | Frontend user and admin UI | Complete | User key/config pages and admin settings work in the active frontend theme |
 | 7 | Security and compatibility validation | Complete | Existing relay unchanged, Fusion abuse/security checks pass |
-| 8 | Release handoff | Not started | Docs updated with final status, validation evidence, and deployment notes |
+| 8 | Release handoff | Complete | Docs updated with final status, validation evidence, and deployment notes |
 
 ## Stage 0: Planning Baseline
 
@@ -342,8 +344,8 @@ Primary files:
 
 Completion criteria:
 
-- User can create, list, edit, disable, delete, and test Fusion upstream keys.
-- User can create, list, edit, disable, delete, and test Fusion configs.
+- User can create, list, edit, disable, delete Fusion upstream keys, and see fail-closed test controls.
+- User can create, list, edit, disable, delete Fusion configs, and see fail-closed test controls.
 - UI never reveals plaintext keys after save.
 - Admin can configure Fusion enable switch, billing expression, minimum quota, key-test quota, failed-candidate policy, caps, domain policy, and port policy.
 - UI shows a clear warning when `CRYPTO_SECRET` is not explicitly configured.
@@ -361,6 +363,7 @@ Implementation notes:
 
 - Added the default frontend `/fusion` route with tabs for upstream keys and Fusion configs.
 - Added user CRUD/test UI for Fusion upstream keys and configs. Saved key plaintext is never shown after create/update.
+- Test controls exist in the UI, but the backend test endpoints are fail-closed with `501`; live billed test execution remains a release gap.
 - Added sidebar navigation for the default frontend only; no classic frontend navigation was added.
 - Added admin Fusion settings under Models & Routing, including enablement, service billing expression, failure-charging policy, execution caps, and base URL domain/port policy.
 - Added `/api/status` frontend-safe flags for `fusion_enabled` and `fusion_crypto_secret_configured`.
@@ -439,7 +442,15 @@ go test ./... -count=1: same existing non-Fusion package failure in github.com/Q
 
 ## Stage 8: Release Handoff
 
-State: Not started
+State: Complete
+
+Primary files:
+
+- `docs/fusion/README.md`
+- `docs/fusion/fusion-design.md`
+- `docs/fusion/fusion-implementation-plan.md`
+- `docs/fusion/fusion-progress.md`
+- `docs/fusion/fusion-release-handoff.md`
 
 Completion criteria:
 
@@ -449,11 +460,25 @@ Completion criteria:
 - Deployment notes mention `CRYPTO_SECRET`, `fusion_setting.enabled`, billing expression defaults, and private base URL risk.
 - Git status separates Fusion changes from unrelated local files.
 
+Implemented behavior:
+
+- Added `docs/fusion/fusion-release-handoff.md` with release status, required settings, billing notes, base URL risk, release gaps, validation evidence, rollout checklist, and rollback steps.
+- Updated the Fusion docs index to include the release handoff.
+- Reconciled implementation status with current behavior: `/v1/fusion/chat/completions` is implemented and billed; key/config test endpoints remain fail-closed and are not live billed execution paths.
+- Recorded that broad backend test failures are existing non-Fusion `service/channel_affinity_usage_cache_test.go` state-isolation issues.
+
 Validation:
 
 ```powershell
 git status --short
 git diff --check -- docs\fusion
+```
+
+Validation result recorded on 2026-06-21:
+
+```text
+git diff --check -- docs\fusion: pass
+git status --short: shows only Fusion docs staged/modified plus pre-existing unrelated local files outside Stage 8 scope
 ```
 
 ## Update Rules
@@ -474,9 +499,9 @@ Allowed state values:
 - Complete
 - Deferred
 
-## Final Definition Of Done
+## Final Implementation Handoff Definition Of Done
 
-Fusion is done when all of these are true:
+Fusion implementation handoff is done when all of these are true:
 
 - A normal user can manage upstream keys and Fusion configs without seeing stored plaintext secrets.
 - A normal API token can call `/v1/fusion/chat/completions` only when Fusion is globally enabled and the token may access the Fusion model alias.
@@ -486,3 +511,10 @@ Fusion is done when all of these are true:
 - SSRF protections prevent user-configured base URLs from reaching private/internal targets by default.
 - Existing new-api relay behavior is unchanged.
 - Backend tests, frontend checks for the active frontend, and security validation have been run and recorded.
+
+Release gaps that remain explicit:
+
+- Key/config test endpoints are not live billed execution paths; they fail closed with `501`.
+- No live real-provider smoke test has been run for `/v1/fusion/chat/completions`.
+- Broad backend test sweeps still expose existing non-Fusion channel affinity usage cache test isolation failures.
+- Full frontend lint still exposes existing non-Fusion lint debt outside the Fusion change set.

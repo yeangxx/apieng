@@ -68,7 +68,7 @@ Do not modify:
 - Create: `common/secret_test.go`
 - Modify: `common/init.go`
 
-- [ ] **Step 1: Add failing tests for encryption lifecycle**
+- [x] **Step 1: Add failing tests for encryption lifecycle**
 
 Create `common/secret_test.go`:
 
@@ -158,7 +158,7 @@ func TestFingerprintAndMaskSecret(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 Run:
 
@@ -177,7 +177,7 @@ undefined: FingerprintSecret
 undefined: MaskSecret
 ```
 
-- [ ] **Step 3: Track explicitly configured `CRYPTO_SECRET`**
+- [x] **Step 3: Track explicitly configured `CRYPTO_SECRET`**
 
 Modify `common/init.go` where `CRYPTO_SECRET` is loaded:
 
@@ -193,7 +193,7 @@ if os.Getenv("CRYPTO_SECRET") != "" {
 
 Do not infer persistence from `CryptoSecret != ""`; `common.InitEnv` currently falls back to `SessionSecret`, and that fallback is not acceptable for persisted Fusion upstream keys.
 
-- [ ] **Step 4: Implement secret helpers**
+- [x] **Step 4: Implement secret helpers**
 
 Create `common/secret.go`:
 
@@ -299,7 +299,7 @@ func MaskSecret(plain string) string {
 }
 ```
 
-- [ ] **Step 5: Run tests and confirm pass**
+- [x] **Step 5: Run tests and confirm pass**
 
 Run:
 
@@ -321,7 +321,7 @@ ok  	github.com/QuantumNous/new-api/common
 - Create: `model/fusion_test.go`
 - Modify: `model/main.go`
 
-- [ ] **Step 1: Add model tests for ownership and config validation**
+- [x] **Step 1: Add model tests for ownership and config validation**
 
 Create `model/fusion_test.go` with tests that initialize an in-memory SQLite DB, migrate `FusionAPIKey` and `FusionConfig`, insert records for two users, and verify user 1 cannot load user 2's keys or configs.
 
@@ -337,7 +337,7 @@ func TestFusionConfigModelOverrideRespectsKeyAllowlist(t *testing.T)
 
 Use `require.NoError` for setup and `assert.Error` / `assert.Equal` for expectations.
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 Run:
 
@@ -352,7 +352,7 @@ undefined: FusionAPIKey
 undefined: FusionConfig
 ```
 
-- [ ] **Step 3: Implement `FusionAPIKey`**
+- [x] **Step 3: Implement `FusionAPIKey`**
 
 Create `model/fusion_api_key.go` with:
 
@@ -412,7 +412,7 @@ func (key *FusionAPIKey) DecryptAPIKey() (string, error) {
 }
 ```
 
-- [ ] **Step 4: Implement `FusionConfig`**
+- [x] **Step 4: Implement `FusionConfig`**
 
 Create `model/fusion_config.go` with model fields from the design document, plus:
 
@@ -433,7 +433,7 @@ Implementation rules:
 - Validate and normalize key `BaseURL` before create/update; the model layer should receive already-normalized values or an explicit validation policy from the caller.
 - Reject candidate model overrides and Judge models that are outside the saved key's non-empty `Models` allowlist.
 
-- [ ] **Step 5: Register migrations**
+- [x] **Step 5: Register migrations**
 
 Modify `model/main.go` inside `migrateDB()` AutoMigrate list:
 
@@ -444,7 +444,7 @@ Modify `model/main.go` inside `migrateDB()` AutoMigrate list:
 
 Add them near other user-owned configuration tables such as `CustomOAuthProvider` and `UserOAuthBinding`.
 
-- [ ] **Step 6: Run model tests**
+- [x] **Step 6: Run model tests**
 
 Run:
 
@@ -467,7 +467,7 @@ ok  	github.com/QuantumNous/new-api/model
 - Create: `setting/fusion_setting/fusion_setting.go`
 - Modify: `router/api-router.go`
 
-- [ ] **Step 1: Define DTOs**
+- [x] **Step 1: Define DTOs**
 
 Create `dto/fusion.go`:
 
@@ -515,7 +515,7 @@ type FusionConfigUpdateRequest struct {
 }
 ```
 
-- [ ] **Step 2: Implement controllers**
+- [x] **Step 2: Implement controllers**
 
 Create `controller/fusion.go` with handlers:
 
@@ -549,7 +549,7 @@ Controller rules:
   - Pre-consume platform quota before upstream I/O.
   - Settle/refund through the same billing path as `/v1/fusion/chat/completions`.
 
-- [ ] **Step 3: Mount routes**
+- [x] **Step 3: Mount routes**
 
 Create `router/fusion-router.go`:
 
@@ -589,7 +589,7 @@ Modify `router/api-router.go` inside `SetApiRouter` after user token routes:
 RegisterFusionAPIRoutes(apiRouter)
 ```
 
-- [ ] **Step 4: Add Fusion setting loader**
+- [x] **Step 4: Add Fusion setting loader**
 
 Create `setting/fusion_setting/fusion_setting.go` with read helpers for:
 
@@ -648,7 +648,7 @@ Implementation rules:
 
 Backend enforcement must not depend on the frontend settings page existing.
 
-- [ ] **Step 5: Implement Fusion base URL validation**
+- [x] **Step 5: Implement Fusion base URL validation**
 
 Create `common/fusion_base_url.go`:
 
@@ -686,7 +686,7 @@ func TestValidateFusionBaseURLRejectsRedirectToPrivateIP(t *testing.T)
 func TestValidateFusionBaseURLPreventsDNSRebinding(t *testing.T)
 ```
 
-- [ ] **Step 6: Validate compile**
+- [x] **Step 6: Validate compile**
 
 Run:
 
@@ -708,7 +708,7 @@ ok  	github.com/QuantumNous/new-api/router
 - Create: `service/fusion_billing.go`
 - Create: `service/fusion_test.go`
 
-- [ ] **Step 1: Add fake upstream tests**
+- [x] **Step 1: Add fake upstream tests**
 
 Create `service/fusion_test.go` with `httptest.Server` endpoints for:
 
@@ -734,7 +734,7 @@ func TestFusionBillingExpressionIgnoresFailedCandidatesWhenDisabled(t *testing.T
 func TestFusionPreConsumeCapsCandidateOutputAndJudgeInput(t *testing.T)
 ```
 
-- [ ] **Step 2: Implement engine types**
+- [x] **Step 2: Implement engine types**
 
 Create `service/fusion.go` with:
 
@@ -767,7 +767,7 @@ type FusionEngineResult struct {
 }
 ```
 
-- [ ] **Step 3: Implement bounded parallel candidates**
+- [x] **Step 3: Implement bounded parallel candidates**
 
 Use `errgroup.WithContext` and a buffered semaphore sized by `max_parallel`. Each candidate gets a child timeout derived from `config.TimeoutMS`.
 
@@ -782,7 +782,7 @@ Rules:
 - Truncate candidate output before building the Judge prompt according to `fusion_setting.max_candidate_output_chars`.
 - Reject or trim Judge input before the Judge call according to `fusion_setting.max_judge_input_tokens`.
 
-- [ ] **Step 4: Implement Judge call**
+- [x] **Step 4: Implement Judge call**
 
 Build Judge messages:
 
@@ -808,7 +808,7 @@ Candidate 1:
 </candidate_output>
 ```
 
-- [ ] **Step 5: Implement billing helper**
+- [x] **Step 5: Implement billing helper**
 
 Create `service/fusion_billing.go`:
 
@@ -867,7 +867,7 @@ Rules:
   - `judge_completion` = `jc`
 - Expressions that reference unsupported tiered-billing variables such as `p`, `c`, `cr`, or `img` must fail validation instead of silently evaluating to zero.
 
-- [ ] **Step 6: Run service tests**
+- [x] **Step 6: Run service tests**
 
 Run:
 
@@ -1345,6 +1345,64 @@ Stage 7 result:
 Codex Security diff scan 30155b28-6914-4da2-953e-1f77415d4035 over 4d425e6b..28ebc96f: complete, findingCount=0.
 Report: C:\Users\imyyy\AppData\Local\Temp\codex-security-scans-DMfXa9\new-api\28ebc96f9a8ce81dd20dea76ae4f06d1af618327_20260621T104938Z_xe3y5oqs\report.md
 Stage 7 fix added connect-time DNS/IP validation for Fusion upstream calls and API-key redaction from upstream error text.
+```
+
+## Task 8: Release Handoff
+
+**Files:**
+- `docs/fusion/README.md`
+- `docs/fusion/fusion-design.md`
+- `docs/fusion/fusion-implementation-plan.md`
+- `docs/fusion/fusion-progress.md`
+- `docs/fusion/fusion-release-handoff.md`
+
+- [x] **Step 1: Add release handoff document**
+
+Create `docs/fusion/fusion-release-handoff.md` with:
+
+- Release status.
+- Required deployment settings.
+- Billing notes.
+- Base URL risk notes.
+- User-facing behavior boundary.
+- Release gaps.
+- Validation evidence.
+- Rollout checklist.
+- Rollback instructions.
+
+- [x] **Step 2: Reconcile docs with implemented behavior**
+
+Confirm the docs state:
+
+```text
+/v1/fusion/chat/completions is implemented and billed.
+Key/config test endpoints are mounted but fail closed with 501.
+Live billed test execution remains a release gap.
+```
+
+- [x] **Step 3: Update progress tracker**
+
+Update `docs/fusion/fusion-progress.md` so:
+
+```text
+Stage 8 = Complete
+Current next action = release gate decision for billed key/config test endpoints or MVP ship with fail-closed test controls
+```
+
+- [x] **Step 4: Validate docs and git status**
+
+Run:
+
+```powershell
+git diff --check -- docs\fusion
+git status --short
+```
+
+Expected:
+
+```text
+docs diff check passes
+Fusion docs are separated from unrelated local files
 ```
 
 ## Self-Review Checklist
