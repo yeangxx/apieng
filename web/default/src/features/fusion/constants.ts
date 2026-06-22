@@ -50,7 +50,16 @@ export const FUSION_KEY_STATUS_OPTIONS = Object.values(FUSION_KEY_STATUSES).map(
 )
 
 export const FUSION_PROVIDER_OPENAI_COMPATIBLE = 'openai_compatible'
+export const FUSION_PROTOCOL_OPENAI_CHAT_COMPATIBLE =
+  'openai_chat_compatible'
 export const FUSION_STRATEGY_SYNTHESIZE = 'synthesize'
+
+export const FUSION_AUTH_TYPE_OPTIONS = [
+  { label: 'Bearer header', value: 'bearer' },
+  { label: 'Raw header', value: 'header' },
+  { label: 'Query parameter', value: 'query' },
+  { label: 'No auth injection', value: 'none' },
+] as const
 
 export const FUSION_BILLING_DEFAULT_EXPRESSION =
   'max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 + failed * failed_quota)'
@@ -58,9 +67,13 @@ export const FUSION_BILLING_DEFAULT_EXPRESSION =
 export const FUSION_ERROR_MESSAGES = {
   LOAD_KEYS_FAILED: 'Failed to load Fusion keys',
   LOAD_CONFIGS_FAILED: 'Failed to load Fusion configs',
+  LOAD_TEMPLATES_FAILED: 'Failed to load Fusion upstream templates',
   CREATE_KEY_FAILED: 'Failed to create Fusion key',
   UPDATE_KEY_FAILED: 'Failed to update Fusion key',
   DELETE_KEY_FAILED: 'Failed to delete Fusion key',
+  TEST_KEY_FAILED: 'Failed to test Fusion key',
+  SAVE_TEMPLATE_FAILED: 'Failed to save Fusion upstream template',
+  DELETE_TEMPLATE_FAILED: 'Failed to delete Fusion upstream template',
   CREATE_CONFIG_FAILED: 'Failed to create Fusion config',
   UPDATE_CONFIG_FAILED: 'Failed to update Fusion config',
   DELETE_CONFIG_FAILED: 'Failed to delete Fusion config',
@@ -71,6 +84,9 @@ export const FUSION_SUCCESS_MESSAGES = {
   KEY_CREATED: 'Fusion key created successfully',
   KEY_UPDATED: 'Fusion key updated successfully',
   KEY_DELETED: 'Fusion key deleted successfully',
+  KEY_TESTED: 'Fusion key test completed',
+  TEMPLATE_SAVED: 'Fusion upstream template saved successfully',
+  TEMPLATE_DELETED: 'Fusion upstream template deleted successfully',
   CONFIG_CREATED: 'Fusion config created successfully',
   CONFIG_UPDATED: 'Fusion config updated successfully',
   CONFIG_DELETED: 'Fusion config deleted successfully',

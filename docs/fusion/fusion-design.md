@@ -2,21 +2,23 @@
 
 ## Purpose
 
-Fusion adds a user-facing multi-model aggregation endpoint:
+Fusion adds a user-facing multi-model aggregation path through the normal OpenAI-compatible endpoints:
 
 ```text
-POST /v1/fusion/chat/completions
+POST /v1/chat/completions
+POST /v1/responses
 ```
 
-The caller uses a normal new-api API token. The user configures their own upstream API keys in the dashboard. Fusion runs several upstream chat completion calls in parallel, then uses a Judge model to synthesize the final answer.
+The caller uses a normal new-api API token and a saved `fusion:xxx` model alias. This keeps external tools on the same `/v1` base URL used by normal OpenAI-compatible clients. `POST /fusion` and `POST /v1/fusion/chat/completions` remain compatibility aliases for chat-style requests. The user configures their own upstream API keys in the dashboard. Fusion runs several upstream chat completion calls in parallel, then uses a Judge model to synthesize the final answer.
 
 Fusion is not a replacement for the current relay system. It is a new capability layered beside the existing relay path.
 
 ## Non-Negotiable Boundaries
 
 1. Existing relay behavior must not change.
-   - `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1beta/models/...`, Midjourney, task routes, channel distribution, retry, and admin `Channel` behavior keep their current semantics.
-   - No Fusion code should mutate Gin context keys used by normal channel selection unless the request is already inside the Fusion route.
+   - Ordinary models on `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1beta/models/...`, Midjourney, task routes, channel distribution, retry, and admin `Channel` behavior keep their current semantics.
+   - `model=fusion:xxx` on `/v1/chat/completions` and `/v1/responses` is diverted away from admin `Channel` distribution.
+   - No Fusion code should mutate Gin context keys used by normal channel selection unless the request is already identified as a Fusion request.
 
 2. User-supplied upstream keys must not be stored in `Channel`.
    - `Channel` is administrator-owned upstream infrastructure: group routing, weights, auto-ban, model abilities, channel billing, and channel observability.
@@ -26,11 +28,11 @@ Fusion is not a replacement for the current relay system. It is a new capability
    - The user's upstream provider bills the user for upstream candidate and Judge calls.
    - new-api bills the user separately for Fusion orchestration, aggregation, usage tracking, and dashboard service.
    - Fusion must never be a free bypass around normal new-api quota checks.
-   - User-configured `base_url` and API keys are inert configuration records until an enabled Fusion config uses them through `/v1/fusion/chat/completions` after platform pre-billing succeeds.
+   - User-configured `base_url` and API keys are inert configuration records until an enabled Fusion config uses them through `/v1/chat/completions` or `/v1/responses` with a `fusion:xxx` alias, or through a compatibility Fusion route, after platform pre-billing succeeds.
 
 4. Fusion is disabled by default.
    - A root/admin must explicitly enable the global Fusion switch before any Fusion relay call can use user-owned upstream keys.
-   - When disabled, `/v1/fusion/chat/completions` fails before decrypting user keys or calling upstream.
+   - When disabled, `/v1/chat/completions` or `/v1/responses` requests using `model=fusion:xxx`, `/fusion`, and `/v1/fusion/chat/completions` fail before decrypting user keys or calling upstream.
    - Dashboard management may show stored configs, but execution remains blocked.
 
 5. User keys are never a direct free proxy.
@@ -84,10 +86,11 @@ Fusion does not reuse:
 Users maintain a list of upstream keys:
 
 - Name
-- Provider type
+- Upstream protocol/template, selected from administrator-managed templates
 - Base URL
 - Default model
 - Optional model allowlist
+- Optional extra request config JSON for endpoint path, headers, query parameters, and body overrides
 - Encrypted API key
 - Key hint and fingerprint
 - Status
@@ -95,10 +98,10 @@ Users maintain a list of upstream keys:
 Initial provider support:
 
 ```text
-openai_compatible
+openai_chat_compatible
 ```
 
-This keeps the first version focused. Other providers can be added after the data model, billing, logging, and security boundaries are proven.
+This keeps the first version focused. Template fields handle path/header/query/body differences for OpenAI-compatible upstreams. Other wire protocols such as Responses, Anthropic Messages, or Gemini must be added through a new adapter, not by hardcoding behavior in the Fusion engine.
 
 Users may enter arbitrary public OpenAI-compatible `base_url` values. The system must still validate URL syntax, scheme, and SSRF boundaries. Admin domain allowlists are optional hardening, not a required product constraint for the first version.
 
@@ -176,9 +179,11 @@ Fields:
 | `user_id` | int | indexed, owner boundary |
 | `name` | string | display name, max 80 |
 | `provider` | string | initial value `openai_compatible` |
+| `template_id` | int | selected upstream protocol template |
 | `base_url` | string | normalized HTTPS URL |
 | `default_model` | string | default upstream model |
 | `models` | string | TEXT JSON array, optional allowlist |
+| `upstream_config` | string | TEXT JSON object with endpoint/header/query/body overrides |
 | `api_key_ciphertext` | string | encrypted secret envelope |
 | `api_key_hint` | string | masked hint, for example `sk-...abcd` |
 | `key_fingerprint` | string | HMAC fingerprint for duplicate detection |
@@ -199,6 +204,35 @@ Uniqueness:
 
 - A user cannot store the same upstream key fingerprint twice.
 - Different users can store the same fingerprint because credentials may belong to shared organizations.
+
+### `fusion_upstream_templates`
+
+Model file:
+
+```text
+model/fusion_upstream_template.go
+```
+
+Fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | int | GORM primary key |
+| `name` | string | template display name |
+| `provider_label` | string | grouping label shown in UI |
+| `protocol` | string | `openai_chat_compatible` in v1 |
+| `endpoint_path` | string | default upstream path, for example `/v1/chat/completions` |
+| `auth_type` | string | `bearer`, `header`, `query`, or `none` |
+| `auth_header` | string | header name for bearer/header auth |
+| `auth_query_name` | string | query parameter name for query auth |
+| `default_headers` | string | TEXT JSON object |
+| `default_query` | string | TEXT JSON object |
+| `default_body_overrides` | string | TEXT JSON object |
+| `detect_rules` | string | TEXT JSON array for test-time config suggestions |
+| `enabled` | bool | disabled templates cannot be selected for new keys |
+| `sort_order` | int | UI ordering |
+
+The default migration creates an editable `OpenAI Compatible` template. Administrators can add gateway-specific templates without changing code.
 
 ### `fusion_configs`
 
@@ -238,7 +272,7 @@ Indexes:
 
 ### Migration
 
-Add both structs to `model.migrateDB()`. Use GORM `AutoMigrate` for normal fields. Store JSON-like lists/maps in `TEXT` strings to avoid database-specific JSON behavior.
+Add Fusion structs to `model.migrateDB()`. Use GORM `AutoMigrate` for normal fields. Store JSON-like lists/maps in `TEXT` strings to avoid database-specific JSON behavior.
 
 No existing tables should be rewritten for the first version.
 
@@ -298,16 +332,16 @@ All management routes are under `/api/fusion` and use `middleware.UserAuth()`.
 ```text
 GET    /api/fusion/keys
 POST   /api/fusion/keys
+POST   /api/fusion/keys/test
 PUT    /api/fusion/keys/:id
 DELETE /api/fusion/keys/:id
+POST   /api/fusion/keys/:id/test
+GET    /api/fusion/upstream-templates
 ```
 
-Live key testing is excluded from v1. The backend may keep a non-user-facing fail-closed stub for compatibility, but the frontend must not expose a key test control.
+Key testing is a dashboard configuration helper. It requires explicit persistent `CRYPTO_SECRET`, runs through the same upstream URL safety checks and adapter as execution, but does not save detected config automatically and does not enter the Fusion billing path.
 
-Current implementation note:
-
-- The key test endpoint is mounted but fail-closed. It requires Fusion enabled and explicit persistent `CRYPTO_SECRET`, then returns `501` without decrypting keys or calling upstream.
-- The dashboard does not expose a key test button in v1.
+`POST /api/fusion/keys/test` tests typed-but-unsaved key settings. `POST /api/fusion/keys/:id/test` tests a saved key. Both return `detected_config` when administrator rules recognize a missing gateway parameter.
 
 Create request:
 
@@ -315,10 +349,12 @@ Create request:
 {
   "name": "OpenAI personal",
   "provider": "openai_compatible",
+  "template_id": 1,
   "base_url": "https://api.openai.com",
   "api_key": "sk-...",
   "default_model": "gpt-4o-mini",
-  "models": ["gpt-4o-mini", "gpt-4.1"]
+  "models": ["gpt-4o-mini", "gpt-4.1"],
+  "upstream_config": "{}"
 }
 ```
 
@@ -329,10 +365,12 @@ List response item:
   "id": 7,
   "name": "OpenAI personal",
   "provider": "openai_compatible",
+  "template_id": 1,
   "base_url": "https://api.openai.com",
   "api_key_hint": "sk-...abcd",
   "default_model": "gpt-4o-mini",
   "models": ["gpt-4o-mini", "gpt-4.1"],
+  "upstream_config": "{}",
   "status": 1,
   "last_error": ""
 }
@@ -344,6 +382,17 @@ Update rule:
 
 - Empty `api_key` means keep the existing encrypted key.
 - Non-empty `api_key` replaces the secret, hint, and fingerprint.
+
+### Upstream Templates
+
+```text
+GET    /api/fusion/admin/upstream-templates
+POST   /api/fusion/admin/upstream-templates
+PUT    /api/fusion/admin/upstream-templates/:id
+DELETE /api/fusion/admin/upstream-templates/:id
+```
+
+These routes use `middleware.AdminAuth()`. User-facing template selection only reads enabled templates through `GET /api/fusion/upstream-templates`.
 
 ### Configs
 
@@ -398,10 +447,25 @@ Validation:
 Route:
 
 ```text
+POST /v1/chat/completions
+POST /v1/responses
+POST /fusion
 POST /v1/fusion/chat/completions
 ```
 
-Middleware:
+Primary middleware path for `/v1/chat/completions`:
+
+```text
+middleware.RouteTag("relay")
+middleware.SystemPerformanceCheck()
+middleware.TokenAuth()
+middleware.ModelRequestRateLimit()
+middleware.Distribute()
+```
+
+`middleware.Distribute()` reads the request model. Ordinary models continue through normal admin `Channel` selection. If the model starts with `fusion:`, the middleware marks the request as Fusion and skips admin `Channel` selection; the OpenAI relay handler then calls the Fusion handler. This applies to both `/v1/chat/completions` and `/v1/responses`.
+
+Compatibility route middleware for `/fusion` and `/v1/fusion/chat/completions`:
 
 ```text
 middleware.RouteTag("fusion")
@@ -410,21 +474,30 @@ middleware.TokenAuth()
 middleware.ModelRequestRateLimit()
 ```
 
-Do not attach `middleware.Distribute()` because Fusion does not select an admin `Channel`.
+Do not attach `middleware.Distribute()` to the compatibility routes because Fusion does not select an admin `Channel`.
+
+`/v1/chat/completions` and `/v1/responses` are the canonical client-facing routes so external tools can use the same `/v1` base URL for ordinary models and Fusion aliases. `/fusion` and `/v1/fusion/chat/completions` are kept as compatibility aliases and use the same chat handler.
 
 Supported request shape:
 
 - OpenAI-compatible chat completions.
-- `stream=false` or absent.
+- OpenAI Responses text input is adapted into an internal chat request for Fusion execution.
+- `stream=true` is accepted as a compatibility layer. Fusion still executes internally as non-streaming aggregation. The handler opens the SSE response before candidate/Judge execution, sends heartbeat comments while aggregation is running, then emits a final SSE chunk/event and completion marker.
 - `n` must be absent or `1`.
-- Tool calls are rejected in the first version unless the config explicitly enables passthrough and all candidate keys are known to support them.
+- Modern `tools` / `tool_choice` are passed to candidate models. If any successful candidate returns `tool_calls`, Fusion returns the first tool-call candidate in configured candidate order and skips Judge for that turn.
+- Agent tool loops are treated as a state machine:
+  - Tool request turn: candidate models receive the client's tools and may return `tool_calls`; Fusion returns one deterministic tool call and does not run Judge.
+  - Tool observation turn: `/v1/responses` input items such as `function_call` and `function_call_output` are converted back into internal chat `assistant.tool_calls` and `role=tool` messages with the same `call_id`, so candidates can see the tool result.
+  - Final text turn: when candidates stop requesting tools and return text, Fusion resumes normal Judge synthesis.
+- Fusion must preserve tool call identifiers across turns. Dropping `call_id` or the tool result makes agent clients repeat the same tool call.
+- Upstream execution is stream-aware for agent-like turns. If the external request is `stream=true`, includes modern tools, or includes tool observation history, Fusion sends OpenAI-compatible candidate and Judge calls with `stream=true` where applicable and consumes upstream SSE internally. In this path `timeout_ms` acts as a first-response / idle timeout, not a total stream duration cap: active streams can run longer as long as they keep producing events. The public Fusion response is still the current final-result compatibility response, but internal streaming avoids long silent JSON-body reads from slow reasoning/tool models.
+- Ordinary non-tool, non-stream Fusion requests continue to use non-streaming upstream calls so providers without streaming support are not forced onto a different path.
 
 Unsupported in the first version:
 
-- Streaming aggregation.
 - Realtime.
-- Responses API.
 - Images/audio endpoints.
+- Legacy `functions` / `function_call`.
 - Per-request raw upstream credentials.
 - Admin channel fallback when user keys fail.
 
@@ -558,6 +631,7 @@ fusion_setting.max_candidate_output_chars
 fusion_setting.allow_private_base_url
 fusion_setting.allowed_base_url_domains
 fusion_setting.allowed_base_url_ports
+fusion_setting.allowed_token_groups
 ```
 
 Implement these through `setting/config.GlobalConfig.Register("fusion_setting", &FusionSetting{})`. Go helpers may keep names like `IsFusionEnabled()`, but persisted option keys should follow the existing module key style above.
@@ -583,7 +657,37 @@ fusion_setting.max_candidate_output_chars=20000
 fusion_setting.allow_private_base_url=false
 fusion_setting.allowed_base_url_domains=
 fusion_setting.allowed_base_url_ports=443
+fusion_setting.allowed_token_groups=[]
 ```
+
+### Token Groups and API Key Binding
+
+Fusion billing is independent from ordinary model billing.
+
+- Ordinary model calls continue to use the existing model price, model ratio, channel routing, and normal relay settlement.
+- Fusion calls use the global `fusion_setting.billing_expr`.
+- The final Fusion platform service fee is:
+
+```text
+Fusion final quota = Fusion global billing expression result * API key selected Fusion group ratio
+```
+
+`fusion_setting.allowed_token_groups` is the admin whitelist that marks existing token groups as Fusion-only groups, for example:
+
+```json
+["fusion-basic", "fusion-pro"]
+```
+
+A normal API key can call Fusion only when all of these are true:
+
+1. The token's selected `group` is listed in `fusion_setting.allowed_token_groups`.
+2. `model_limits_enabled=true`.
+3. `model_limits` contains exactly one enabled Fusion alias, for example `fusion:research`.
+4. The alias belongs to the authenticated user.
+
+If a token group is not a Fusion group, it cannot save or call any `fusion:xxx` alias. If a token group is a Fusion group, it cannot be used as a broad "allow all models" key and cannot mix ordinary model limits with Fusion aliases.
+
+Fusion group ratios are platform service-fee tiers only. They do not represent upstream provider cost, because the user pays upstream providers through their own configured keys.
 
 ### Billing Formula
 
@@ -807,6 +911,9 @@ Main UI:
 - Status badges for enabled and disabled records
 - Masked key display
 - No plaintext key reveal action
+- Upstream protocol/template selector grouped by administrator-defined provider label
+- Extra request config JSON editor for per-key endpoint/header/query/body overrides
+- Key test button that can fill detected config suggestions into the JSON editor without saving automatically
 
 All user-facing text uses `useTranslation()` and flat i18n keys in locale JSON files.
 
@@ -819,6 +926,7 @@ Fusion should be disabled by default until the root/admin configures:
 - Candidate and timeout limits
 - Billing expression and failed-candidate charging policy
 - Optional base URL domain allowlist
+- Upstream protocol templates for OpenAI-compatible providers and gateways
 
 Admin UI must expose:
 
@@ -827,6 +935,7 @@ Admin UI must expose:
 - Minimum quota, failed-candidate charging toggle, and failed-candidate quota.
 - Candidate, parallelism, timeout, Judge input, and candidate output caps.
 - Public/private base URL policy, domain allowlist, and allowed ports.
+- Fusion upstream template management, including endpoint path, auth injection mode, default headers/query/body overrides, and detection rules.
 
 Admin settings can be added under system settings after the backend option keys exist. The backend must enforce defaults even before the UI exists.
 
@@ -838,12 +947,15 @@ Required admin behavior:
 - `fusion_setting.billing_expr` is required when `fusion_setting.billing_mode=expr`; an invalid expression disables execution rather than falling back to free usage.
 - `fusion_setting.charge_failed_candidates` is an explicit operator policy. If enabled, failed candidates can be charged by the expression through `failed`, `failed_prompt`, and `failed_quota`.
 - Saving an invalid Fusion expression must fail validation and must not replace the last valid expression.
+- Template testing/probing is a configuration helper. It is not a free direct proxy and never saves detected config without the user's explicit save action.
 
 ## Compatibility Matrix
 
 | Area | Expected Result |
 |---|---|
-| Existing `/v1/chat/completions` | unchanged |
+| Existing `/v1/chat/completions` ordinary models | unchanged |
+| `/v1/chat/completions` with `model=fusion:xxx` | primary Fusion chat relay endpoint |
+| `/v1/responses` with `model=fusion:xxx` | Fusion Responses compatibility endpoint |
 | Existing admin channels | unchanged |
 | Existing model pricing | unchanged |
 | Existing token authentication | reused |
@@ -852,7 +964,10 @@ Required admin behavior:
 | Existing usage logs | reused with `channel_id=0` and `other.fusion=true` |
 | Existing frontend keys page | unchanged |
 | Fusion key page | new feature |
-| Streaming | rejected in first version |
+| `POST /fusion` | compatibility alias |
+| `POST /v1/fusion/chat/completions` | compatibility alias |
+| Streaming | accepted as final-chunk SSE compatibility; not true incremental aggregation |
+| Agent tools | supported with `first_success` candidate tool-call selection |
 | User raw key in relay request | rejected |
 | Saved user key direct relay | rejected; only enabled Fusion configs can use saved keys |
 | Fusion disabled | fails before key decryption or upstream calls |

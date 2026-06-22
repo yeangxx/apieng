@@ -7,11 +7,12 @@ This handoff records the deployable Fusion MVP boundary after Stage 8. It is the
 Fusion is implementation-complete for the saved-config relay path:
 
 - Users can store encrypted OpenAI-compatible upstream keys and saved Fusion configs.
-- API callers use `POST /v1/fusion/chat/completions` with a normal API token and a saved Fusion model alias.
+- API callers use the normal OpenAI-compatible `POST /v1/chat/completions` or `POST /v1/responses` endpoint with a saved Fusion model alias such as `fusion:research`. `POST /fusion` and `POST /v1/fusion/chat/completions` remain available as chat compatibility aliases.
 - Candidate calls run in parallel, then the configured Judge model synthesizes the final response.
 - Platform service quota is pre-consumed before upstream calls and settled or refunded through the existing billing session path.
 - User-owned upstream keys are never routed through administrator `Channel` records.
-- Normal relay routes such as `POST /v1/chat/completions` remain mounted under the existing distributor path.
+- Normal relay routes such as `POST /v1/chat/completions` and `POST /v1/responses` remain mounted under the existing distributor path; only `model=fusion:xxx` is diverted to Fusion before admin `Channel` selection.
+- Administrators manage Fusion upstream templates in the database. Users select one template per upstream key and can save extra JSON config for gateway-specific request parameters.
 
 Fusion is not enabled automatically. It remains disabled until an administrator configures the required settings and flips `fusion_setting.enabled=true`.
 
@@ -83,32 +84,41 @@ Use `fusion_setting.allowed_base_url_domains` only when the operator wants to re
 Supported in the MVP:
 
 - Saved user-owned upstream keys.
+- Administrator-managed upstream protocol templates.
 - Saved Fusion configs selected by model alias, such as `fusion:research`.
 - `strategy=synthesize`.
 - Non-streaming OpenAI-compatible chat completions.
+- OpenAI-compatible `stream=true` final-result SSE wrapping for chat completions, with heartbeat comments while aggregation runs.
+- OpenAI Responses text compatibility through `POST /v1/responses`, including final-result SSE wrapping and heartbeat comments when `stream=true`.
+- Modern agent `tools` / `tool_choice` passthrough with first-success candidate `tool_calls` returned to the client.
+- Responses agent tool-loop history preservation: previous `function_call` and `function_call_output` input items are converted to internal chat `assistant.tool_calls` and `role=tool` messages with matching `call_id` before candidate calls.
+- Internal upstream SSE for agent-like calls: stream/tool candidate and Judge requests use `stream=true` upstream where applicable, and Fusion reconstructs text/tool calls before applying the existing selection/Judge flow. In this path `timeout_ms` is the first-response / idle timeout; active streams may run longer if they keep producing events.
 - Admin-configured service billing expression.
 - Failed-candidate billing policy.
+- Key test/probe that can suggest `upstream_config` JSON without saving it automatically.
 
 Rejected or not implemented in the MVP:
 
-- Streaming aggregation.
-- Responses API.
+- True incremental streaming aggregation. Current `stream=true` support keeps the connection alive and returns the final result, but does not stream candidate or Judge tokens incrementally.
+- Streaming Judge synthesis to the client.
+- Judge-based tool-call arbitration.
+- Fusion-side tool execution. Agent clients remain responsible for executing returned tool calls and sending the tool result back on the next turn.
+- Legacy `functions` / `function_call`.
+- Complex non-text Responses modalities.
 - Realtime, image, audio, video, or task endpoints.
 - Direct single-call bring-your-own-key proxy.
 - Per-request raw `api_key`, `base_url`, `key_id`, candidate key IDs, or Judge key ID.
-- Tool/function calling passthrough.
 - `best_of` or `vote` strategy execution.
 - Admin `Channel` fallback when user keys fail.
-- Dashboard test buttons and live key/config test execution.
+- Billed live config test execution.
 
 ## Release Gaps
 
 These are intentionally not part of the v1 release:
 
-- `POST /api/fusion/keys/:id/test` is a non-user-facing fail-closed stub. It returns `501` and does not decrypt keys, call upstream, or bill.
-- `POST /api/fusion/configs/:id/test` is a non-user-facing fail-closed stub. It returns `501` and does not decrypt keys, call upstream, or bill.
-- The default frontend does not expose key/config test controls.
-- No live real-provider smoke test was run during Stage 7/8. Validation used fake upstream servers, focused tests, route registration checks, and source inspection.
+- `POST /api/fusion/configs/:id/test` is still a fail-closed stub. It returns `501` and does not decrypt keys, call upstream, or bill.
+- Key test/probe is a configuration helper, not a public free proxy. It can call the configured upstream to detect template suggestions, but it does not save detected config automatically and does not enter Fusion billing.
+- No live real-provider smoke test was run during Stage 7/8/9/10. Validation used fake upstream servers, focused tests, route registration checks, and source inspection.
 - The classic frontend does not expose Fusion navigation.
 
 The relay endpoint itself is separate from these test endpoints and is implemented through the billed Fusion execution path.
@@ -166,9 +176,11 @@ This can fail on existing non-Fusion lint debt outside the Fusion change set. St
 4. Configure candidate count, timeout, Judge input, candidate output, domain, and port limits.
 5. Configure and validate `fusion_setting.billing_expr`.
 6. Confirm token model access rules include the intended Fusion aliases.
-7. Run a controlled fake-upstream or staging upstream smoke for `/v1/fusion/chat/completions`.
-8. Enable `fusion_setting.enabled=true` for a limited user group or controlled rollout.
-9. Monitor consume logs with `other.fusion=true` and `channel_id=0`.
+7. Confirm the default `OpenAI Compatible` Fusion upstream template exists or create the intended upstream templates in the admin UI.
+8. Run a controlled fake-upstream or staging upstream smoke for `/v1/chat/completions` and `/v1/responses` with `model=fusion:xxx`, including `stream=true` clients.
+9. Set each Fusion config `MaxParallel` according to expected latency and upstream rate limits. `MaxParallel=1` runs candidate calls serially and can make agent clients feel slow.
+10. Enable `fusion_setting.enabled=true` for a limited user group or controlled rollout.
+11. Monitor consume logs with `other.fusion=true` and `channel_id=0`.
 
 ## Rollback
 

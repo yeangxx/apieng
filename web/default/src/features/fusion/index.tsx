@@ -38,6 +38,9 @@ import {
   deleteFusionKey,
   getFusionConfigs,
   getFusionKeys,
+  getFusionUpstreamTemplates,
+  testSavedFusionKey,
+  testUnsavedFusionKey,
   updateFusionConfig,
   updateFusionKey,
 } from './api'
@@ -51,6 +54,7 @@ import {
 } from './constants'
 import type {
   FusionAPIKey,
+  FusionAPIKeyTestResponse,
   FusionAPIKeyPayload,
   FusionConfig,
   FusionConfigPayload,
@@ -59,6 +63,7 @@ import type {
 const fusionQueryKeys = {
   keys: ['fusion', 'keys'] as const,
   configs: ['fusion', 'configs'] as const,
+  templates: ['fusion', 'upstream-templates'] as const,
 }
 
 export function Fusion() {
@@ -93,6 +98,20 @@ export function Fusion() {
       if (!result.success) {
         toast.error(
           result.message || t(FUSION_ERROR_MESSAGES.LOAD_CONFIGS_FAILED)
+        )
+        return []
+      }
+      return result.data?.items ?? []
+    },
+  })
+
+  const templatesQuery = useQuery({
+    queryKey: fusionQueryKeys.templates,
+    queryFn: async () => {
+      const result = await getFusionUpstreamTemplates()
+      if (!result.success) {
+        toast.error(
+          result.message || t(FUSION_ERROR_MESSAGES.LOAD_TEMPLATES_FAILED)
         )
         return []
       }
@@ -193,8 +212,24 @@ export function Fusion() {
     },
   })
 
+  const testKeyMutation = useMutation({
+    mutationFn: async (request: {
+      keyId?: number
+      payload: FusionAPIKeyPayload
+    }) => {
+      if (request.keyId) return testSavedFusionKey(request.keyId, request.payload)
+      return testUnsavedFusionKey(request.payload)
+    },
+    onSuccess: (result) => {
+      if (!result.success) {
+        toast.error(result.message || t(FUSION_ERROR_MESSAGES.TEST_KEY_FAILED))
+      }
+    },
+  })
+
   const keys = keysQuery.data ?? []
   const configs = configsQuery.data ?? []
+  const templates = templatesQuery.data ?? []
   const activeAction = useMemo(() => {
     if (activeTab === 'keys') {
       return (
@@ -315,7 +350,9 @@ export function Fusion() {
       <FusionKeyDrawer
         open={keyDrawerOpen}
         currentKey={editingKey}
+        templates={templates}
         isSubmitting={keyMutation.isPending}
+        isTesting={testKeyMutation.isPending}
         onOpenChange={(open) => {
           setKeyDrawerOpen(open)
           if (!open) setEditingKey(undefined)
@@ -323,6 +360,13 @@ export function Fusion() {
         onSubmit={async (payload) => {
           const result = await keyMutation.mutateAsync(payload)
           return result.success
+        }}
+        onTest={async (
+          payload: FusionAPIKeyPayload,
+          keyId?: number
+        ): Promise<FusionAPIKeyTestResponse | undefined> => {
+          const result = await testKeyMutation.mutateAsync({ payload, keyId })
+          return result.success ? result.data : undefined
         }}
       />
 

@@ -23,10 +23,18 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, KeyRound, Settings2, WalletCards } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { getUserModels, getUserGroups } from '@/lib/api'
-import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
-import { cn } from '@/lib/utils'
-import { useStatus } from '@/hooks/use-status'
+
+import { DateTimePicker } from '@/components/datetime-picker'
+import {
+  SideDrawerSection,
+  SideDrawerSectionHeader,
+  sideDrawerContentClassName,
+  sideDrawerFooterClassName,
+  sideDrawerFormClassName,
+  sideDrawerHeaderClassName,
+  sideDrawerSwitchItemClassName,
+} from '@/components/drawer-layout'
+import { MultiSelect } from '@/components/multi-select'
 import { Button } from '@/components/ui/button'
 import {
   Collapsible,
@@ -54,17 +62,13 @@ import {
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { DateTimePicker } from '@/components/datetime-picker'
-import {
-  SideDrawerSection,
-  SideDrawerSectionHeader,
-  sideDrawerContentClassName,
-  sideDrawerFooterClassName,
-  sideDrawerFormClassName,
-  sideDrawerHeaderClassName,
-  sideDrawerSwitchItemClassName,
-} from '@/components/drawer-layout'
-import { MultiSelect } from '@/components/multi-select'
+import { getFusionConfigs } from '@/features/fusion/api'
+import type { FusionConfig } from '@/features/fusion/types'
+import { useStatus } from '@/hooks/use-status'
+import { getUserModels, getUserGroups } from '@/lib/api'
+import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
+import { cn } from '@/lib/utils'
+
 import { createApiKey, updateApiKey, getApiKey } from '../api'
 import { ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
 import {
@@ -80,6 +84,7 @@ import {
   type ApiKeyGroupOption,
 } from './api-key-group-combobox'
 import { useApiKeys } from './api-keys-provider'
+import { FusionConfigCombobox } from './fusion-config-combobox'
 
 type ApiKeyMutateDrawerProps = {
   open: boolean
@@ -116,7 +121,15 @@ export function ApiKeysMutateDrawer({
     staleTime: 0,
   })
 
+  const { data: fusionConfigsData } = useQuery({
+    queryKey: ['fusion-configs', 'api-key-drawer'],
+    queryFn: getFusionConfigs,
+    enabled: open,
+    staleTime: 0,
+  })
+
   const models = modelsData?.data || []
+  const ordinaryModels = models.filter((model) => !model.startsWith('fusion:'))
   const groupsRaw = groupsData?.data || {}
   const groups: ApiKeyGroupOption[] = Object.entries(groupsRaw).map(
     ([key, info]) => ({
@@ -124,8 +137,11 @@ export function ApiKeysMutateDrawer({
       label: key,
       desc: info.desc || key,
       ratio: info.ratio,
+      fusion: info.fusion === true,
     })
   )
+  const enabledFusionConfigs: FusionConfig[] =
+    fusionConfigsData?.data?.items?.filter((config) => config.enabled) ?? []
   const backendHasAuto = groups.some((g) => g.value === 'auto')
   const schema = getApiKeyFormSchema(t)
 
@@ -166,9 +182,39 @@ export function ApiKeysMutateDrawer({
   }, [groups, form])
 
   const onSubmit = async (data: ApiKeyFormValues) => {
+    let nextData = data
+    if (isFusionGroup) {
+      const fusionAlias = data.fusion_model_alias?.trim()
+      if (!fusionAlias) {
+        form.setError('fusion_model_alias', {
+          type: 'manual',
+          message: t(
+            'Fusion token groups must bind exactly one Fusion config.'
+          ),
+        })
+        toast.error(
+          t('Fusion token groups must bind exactly one Fusion config.')
+        )
+        return
+      }
+      nextData = {
+        ...data,
+        fusion_model_alias: fusionAlias,
+        model_limits: [fusionAlias],
+      }
+    } else {
+      nextData = {
+        ...data,
+        fusion_model_alias: '',
+        model_limits: data.model_limits.filter(
+          (model) => !model.startsWith('fusion:')
+        ),
+      }
+    }
+
     setIsSubmitting(true)
     try {
-      const basePayload = transformFormDataToPayload(data)
+      const basePayload = transformFormDataToPayload(nextData)
 
       if (isUpdate && currentRow) {
         const result = await updateApiKey({
@@ -184,16 +230,16 @@ export function ApiKeysMutateDrawer({
         }
       } else {
         // Create mode - handle batch creation
-        const count = data.tokenCount || 1
+        const count = nextData.tokenCount || 1
         let successCount = 0
 
         for (let i = 0; i < count; i++) {
           const result = await createApiKey({
             ...basePayload,
             name:
-              i === 0 && data.name
-                ? data.name
-                : `${data.name || 'default'}-${Math.random().toString(36).slice(2, 8)}`,
+              i === 0 && nextData.name
+                ? nextData.name
+                : `${nextData.name || 'default'}-${Math.random().toString(36).slice(2, 8)}`,
           })
           if (result.success) {
             successCount++
@@ -247,6 +293,45 @@ export function ApiKeysMutateDrawer({
     : t('Enter quota in {{currency}}', { currency: currencyLabel })
   const selectedGroup = form.watch('group')
   const unlimitedQuota = form.watch('unlimited_quota')
+  const selectedFusionModelAlias = form.watch('fusion_model_alias')
+  const selectedGroupOption = groups.find(
+    (group) => group.value === selectedGroup
+  )
+  const isFusionGroup = selectedGroupOption?.fusion === true
+
+  useEffect(() => {
+    if (!selectedGroup || groups.length === 0) return
+    const currentLimits = form.getValues('model_limits')
+    if (isFusionGroup) {
+      const existingFusionAlias =
+        selectedFusionModelAlias ||
+        currentLimits.find((model) => model.startsWith('fusion:')) ||
+        ''
+      form.setValue('fusion_model_alias', existingFusionAlias)
+      form.setValue(
+        'model_limits',
+        existingFusionAlias ? [existingFusionAlias] : []
+      )
+      form.setValue('cross_group_retry', false)
+      return
+    }
+
+    if (selectedFusionModelAlias) {
+      form.setValue('fusion_model_alias', '')
+    }
+    const ordinaryLimits = currentLimits.filter(
+      (model) => !model.startsWith('fusion:')
+    )
+    if (ordinaryLimits.length !== currentLimits.length) {
+      form.setValue('model_limits', ordinaryLimits)
+    }
+  }, [
+    form,
+    groups.length,
+    isFusionGroup,
+    selectedFusionModelAlias,
+    selectedGroup,
+  ])
 
   return (
     <Sheet
@@ -315,6 +400,38 @@ export function ApiKeysMutateDrawer({
                   </FormItem>
                 )}
               />
+
+              {isFusionGroup && (
+                <FormField
+                  control={form.control}
+                  name='fusion_model_alias'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Fusion Config')}</FormLabel>
+                      <FormControl>
+                        <FusionConfigCombobox
+                          configs={enabledFusionConfigs}
+                          value={field.value}
+                          onValueChange={(value) => {
+                            field.onChange(value)
+                            form.setValue('model_limits', value ? [value] : [])
+                          }}
+                          placeholder={t('Select a Fusion config')}
+                          disabled={enabledFusionConfigs.length === 0}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {enabledFusionConfigs.length === 0
+                          ? t('No enabled Fusion configs available')
+                          : t(
+                              'Select one enabled Fusion config. This key will only be able to call that Fusion alias.'
+                            )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
 
               {selectedGroup === 'auto' && (
                 <FormField
@@ -518,32 +635,36 @@ export function ApiKeysMutateDrawer({
                 </CollapsibleTrigger>
                 <CollapsibleContent>
                   <div className='flex flex-col gap-4 pt-2'>
-                    <FormField
-                      control={form.control}
-                      name='model_limits'
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>{t('Model Limits')}</FormLabel>
-                          <FormControl>
-                            <MultiSelect
-                              options={models.map((m) => ({
-                                label: m,
-                                value: m,
-                              }))}
-                              selected={field.value}
-                              onChange={field.onChange}
-                              placeholder={t(
-                                'Select models (empty for allow all)'
+                    {!isFusionGroup && (
+                      <FormField
+                        control={form.control}
+                        name='model_limits'
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>{t('Model Limits')}</FormLabel>
+                            <FormControl>
+                              <MultiSelect
+                                options={ordinaryModels.map((model) => ({
+                                  label: model,
+                                  value: model,
+                                }))}
+                                selected={field.value}
+                                onChange={field.onChange}
+                                placeholder={t(
+                                  'Select models (empty for allow all)'
+                                )}
+                              />
+                            </FormControl>
+                            <FormDescription>
+                              {t(
+                                'Limit which models can be used with this key'
                               )}
-                            />
-                          </FormControl>
-                          <FormDescription>
-                            {t('Limit which models can be used with this key')}
-                          </FormDescription>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
+                            </FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    )}
 
                     <FormField
                       control={form.control}

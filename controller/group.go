@@ -6,6 +6,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/fusion_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
@@ -33,15 +34,17 @@ func GetUserGroups(c *gin.Context) {
 		// UserUsableGroups contains the groups that the user can use
 		if desc, ok := userUsableGroups[groupName]; ok {
 			usableGroups[groupName] = map[string]interface{}{
-				"ratio": service.GetUserGroupRatio(userGroup, groupName),
-				"desc":  desc,
+				"ratio":  service.GetUserGroupRatio(userGroup, groupName),
+				"desc":   desc,
+				"fusion": fusion_setting.IsFusionTokenGroup(groupName),
 			}
 		}
 	}
 	if _, ok := userUsableGroups["auto"]; ok {
 		usableGroups["auto"] = map[string]interface{}{
-			"ratio": "自动",
-			"desc":  setting.GetUsableGroupDescription("auto"),
+			"ratio":  "自动",
+			"desc":   setting.GetUsableGroupDescription("auto"),
+			"fusion": false,
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{

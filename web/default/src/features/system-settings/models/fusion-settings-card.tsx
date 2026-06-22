@@ -17,12 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useEffect } from 'react'
-import * as z from 'zod'
-import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { useStatus } from '@/hooks/use-status'
+import * as z from 'zod'
+
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -37,12 +37,15 @@ import {
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { SettingsPageFormActions } from '../components/settings-page-context'
+import { useStatus } from '@/hooks/use-status'
+import { FusionUpstreamTemplateManager } from '@/features/fusion/components/fusion-upstream-template-manager'
+
 import {
   SettingsForm,
   SettingsSwitchContent,
   SettingsSwitchItem,
 } from '../components/settings-form-layout'
+import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
 
@@ -82,7 +85,10 @@ const fusionSettingsSchema = z.object({
     max_timeout_ms: z.coerce.number().int().min(1000),
     service_model_name: z.string().trim().min(1),
     billing_mode: z.literal('expr'),
-    billing_expr: z.string().trim().min(1, 'Fusion billing expression is required'),
+    billing_expr: z
+      .string()
+      .trim()
+      .min(1, 'Fusion billing expression is required'),
     minimum_quota: z.coerce.number().int().min(0),
     charge_failed_candidates: z.boolean(),
     failed_candidate_quota: z.coerce.number().int().min(0),
@@ -91,6 +97,7 @@ const fusionSettingsSchema = z.object({
     allow_private_base_url: z.boolean(),
     allowed_base_url_domains: jsonStringArray,
     allowed_base_url_ports: jsonNumberArray,
+    allowed_token_groups: jsonStringArray,
   }),
 })
 
@@ -116,6 +123,7 @@ type FlatFusionSettings = {
   'fusion_setting.allow_private_base_url': boolean
   'fusion_setting.allowed_base_url_domains': string
   'fusion_setting.allowed_base_url_ports': string
+  'fusion_setting.allowed_token_groups': string
 }
 
 type FusionSettingsCardProps = {
@@ -157,7 +165,8 @@ function flattenFusionSettings(
     'fusion_setting.billing_mode': settings.billing_mode,
     'fusion_setting.billing_expr': settings.billing_expr.trim(),
     'fusion_setting.minimum_quota': settings.minimum_quota,
-    'fusion_setting.charge_failed_candidates': settings.charge_failed_candidates,
+    'fusion_setting.charge_failed_candidates':
+      settings.charge_failed_candidates,
     'fusion_setting.failed_candidate_quota': settings.failed_candidate_quota,
     'fusion_setting.max_judge_input_tokens': settings.max_judge_input_tokens,
     'fusion_setting.max_candidate_output_chars':
@@ -170,6 +179,10 @@ function flattenFusionSettings(
     'fusion_setting.allowed_base_url_ports': normalizeJsonText(
       settings.allowed_base_url_ports,
       '[443]'
+    ),
+    'fusion_setting.allowed_token_groups': normalizeJsonText(
+      settings.allowed_token_groups,
+      '[]'
     ),
   }
 }
@@ -187,6 +200,10 @@ function buildFormDefaults(
       allowed_base_url_ports: formatJsonForTextarea(
         defaultValues.fusion_setting.allowed_base_url_ports,
         '[443]'
+      ),
+      allowed_token_groups: formatJsonForTextarea(
+        defaultValues.fusion_setting.allowed_token_groups,
+        '[]'
       ),
     },
   }
@@ -216,6 +233,7 @@ export function FusionSettingsCard(props: FusionSettingsCardProps) {
     field:
       | 'fusion_setting.allowed_base_url_domains'
       | 'fusion_setting.allowed_base_url_ports'
+      | 'fusion_setting.allowed_token_groups'
   ) => {
     const raw = form.getValues(field)
     try {
@@ -307,6 +325,41 @@ export function FusionSettingsCard(props: FusionSettingsCardProps) {
                 <FormDescription>
                   {t(
                     'Backend validation must pass before this expression is saved.'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='fusion_setting.allowed_token_groups'
+            render={({ field }) => (
+              <FormItem>
+                <div className='flex items-center justify-between gap-2'>
+                  <FormLabel>{t('Fusion Token Groups')}</FormLabel>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='xs'
+                    onClick={() =>
+                      formatJsonField('fusion_setting.allowed_token_groups')
+                    }
+                  >
+                    {t('Format JSON')}
+                  </Button>
+                </div>
+                <FormControl>
+                  <Textarea
+                    {...field}
+                    className='min-h-20 font-mono text-xs'
+                    spellCheck={false}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'JSON string array of token groups allowed to call Fusion aliases.'
                   )}
                 </FormDescription>
                 <FormMessage />
@@ -588,7 +641,9 @@ export function FusionSettingsCard(props: FusionSettingsCardProps) {
                   />
                 </FormControl>
                 <FormDescription>
-                  {t('JSON string array. Empty array means no domain allowlist.')}
+                  {t(
+                    'JSON string array. Empty array means no domain allowlist.'
+                  )}
                 </FormDescription>
                 <FormMessage />
               </FormItem>
@@ -627,6 +682,8 @@ export function FusionSettingsCard(props: FusionSettingsCardProps) {
               </FormItem>
             )}
           />
+
+          <FusionUpstreamTemplateManager />
         </SettingsForm>
       </Form>
     </SettingsSection>

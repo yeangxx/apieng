@@ -34,6 +34,7 @@ type FusionSetting struct {
 	AllowPrivateBaseURL     bool     `json:"allow_private_base_url"`
 	AllowedBaseURLDomains   []string `json:"allowed_base_url_domains"`
 	AllowedBaseURLPorts     []int    `json:"allowed_base_url_ports"`
+	AllowedTokenGroups      []string `json:"allowed_token_groups"`
 }
 
 var fusionSetting = defaultFusionSetting()
@@ -63,6 +64,7 @@ func defaultFusionSetting() FusionSetting {
 		AllowPrivateBaseURL:     false,
 		AllowedBaseURLDomains:   []string{},
 		AllowedBaseURLPorts:     []int{443},
+		AllowedTokenGroups:      []string{},
 	}
 }
 
@@ -150,6 +152,23 @@ func GetFusionAllowedBaseURLDomains() []string {
 
 func GetFusionAllowedBaseURLPorts() []int {
 	return append([]int{}, fusionSetting.AllowedBaseURLPorts...)
+}
+
+func GetFusionAllowedTokenGroups() []string {
+	return append([]string{}, fusionSetting.AllowedTokenGroups...)
+}
+
+func IsFusionTokenGroup(group string) bool {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return false
+	}
+	for _, allowedGroup := range fusionSetting.AllowedTokenGroups {
+		if strings.TrimSpace(allowedGroup) == group {
+			return true
+		}
+	}
+	return false
 }
 
 func ValidateFusionBillingExpr(exprStr string) error {

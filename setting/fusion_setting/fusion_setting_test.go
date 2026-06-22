@@ -31,6 +31,8 @@ func TestFusionSettingDefaults(t *testing.T) {
 	assert.False(t, IsFusionPrivateBaseURLAllowed())
 	assert.Equal(t, []string{}, GetFusionAllowedBaseURLDomains())
 	assert.Equal(t, []int{443}, GetFusionAllowedBaseURLPorts())
+	assert.Equal(t, []string{}, GetFusionAllowedTokenGroups())
+	assert.False(t, IsFusionTokenGroup("fusion-basic"))
 }
 
 func TestFusionSettingLoadFromDB(t *testing.T) {
@@ -44,6 +46,7 @@ func TestFusionSettingLoadFromDB(t *testing.T) {
 		"fusion_setting.charge_failed_candidates": "true",
 		"fusion_setting.allowed_base_url_domains": `["example.com","*.example.org"]`,
 		"fusion_setting.allowed_base_url_ports":   `[443,8443]`,
+		"fusion_setting.allowed_token_groups":     `["fusion-basic","fusion-pro"]`,
 	})
 
 	require.NoError(t, err)
@@ -53,6 +56,9 @@ func TestFusionSettingLoadFromDB(t *testing.T) {
 	assert.True(t, ShouldFusionChargeFailedCandidates())
 	assert.Equal(t, []string{"example.com", "*.example.org"}, GetFusionAllowedBaseURLDomains())
 	assert.Equal(t, []int{443, 8443}, GetFusionAllowedBaseURLPorts())
+	assert.Equal(t, []string{"fusion-basic", "fusion-pro"}, GetFusionAllowedTokenGroups())
+	assert.True(t, IsFusionTokenGroup("fusion-basic"))
+	assert.False(t, IsFusionTokenGroup("default"))
 }
 
 func TestValidateFusionBillingExprAcceptsDefault(t *testing.T) {

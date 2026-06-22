@@ -8,10 +8,10 @@ This is the working progress board for the Fusion feature. Update this file afte
 |---|---|
 | Product/design scope | Ready |
 | Implementation plan | Ready |
-| Business code changes | Stage 8 release handoff complete |
-| Frontend changes | Stage 6 complete |
+| Business code changes | Stage 14 agent upstream streaming resilience complete |
+| Frontend changes | Stage 9 template/key test UI complete |
 | Security validation | Stage 7 focused tests passed; Codex Security diff scan complete with 0 unresolved findings |
-| Current next action | Prepare MVP rollout; key/config live test execution is excluded from v1 |
+| Current next action | User live retest with Codex-style client, then tune Fusion timeout/model order if the upstream model itself remains slow |
 
 Current source documents:
 
@@ -24,31 +24,33 @@ Current source documents:
 
 Fusion v1 builds a saved-config-only multi-model aggregation flow:
 
-- `POST /v1/fusion/chat/completions`
-- User-owned encrypted OpenAI-compatible upstream keys.
+- `POST /v1/chat/completions` and `POST /v1/responses` as primary endpoints when `model` is a `fusion:xxx` alias, with `POST /fusion` and `POST /v1/fusion/chat/completions` kept as chat compatibility aliases.
+- User-owned encrypted upstream keys selected through administrator-managed upstream templates.
 - User-owned Fusion configs selected by `model`, such as `fusion:research`.
 - Parallel candidate calls followed by a Judge synthesis call.
 - Admin-controlled platform service billing through `fusion_setting.billing_expr`.
 - Fusion disabled by default through `fusion_setting.enabled=false`.
+- Key test/probe flow that can suggest per-key upstream JSON config without saving it automatically.
+- Agent tools passthrough for Codex/Claude Code style clients using first-success candidate tool-call selection.
+- Agent/tool candidate and Judge calls are consumed through internal OpenAI-compatible SSE when the request is stream/tool-like, while normal non-tool requests remain non-streaming upstream calls.
 - No direct free proxy using user-supplied API keys or base URLs.
 
 Fusion v1 intentionally does not include:
 
-- Streaming aggregation.
-- Responses API.
+- True incremental streaming aggregation. `stream=true` is accepted only as a final-result SSE compatibility layer with heartbeat keepalive while aggregation runs.
 - Realtime, image, audio, video, or task endpoints.
 - Direct single-call bring-your-own-key proxy.
-- Tool/function calling passthrough.
+- Legacy `functions` / `function_call`.
 - `best_of` or `vote` strategy execution.
 - Admin `Channel` fallback when user keys fail.
-- Live key/config test execution and dashboard test buttons.
+- Billed live config test execution.
 
 ## Locked MVP Decisions
 
 These decisions are binding for the first implementation pass:
 
 1. Only `strategy=synthesize` is executable. Save validation rejects other strategy values.
-2. `stream=true`, `n>1`, `tools`, `tool_choice`, `functions`, and `function_call` are rejected.
+2. `stream=true` is accepted only as a final-result SSE compatibility layer with heartbeat keepalive while aggregation runs; `tools` / `tool_choice` are passed through to candidates; `n>1`, legacy `functions`, and legacy `function_call` are rejected.
 3. Saved key direct relay is rejected. A saved key can only run through an enabled Fusion config after platform pre-consume succeeds.
 4. User request JSON cannot include raw `api_key`, `base_url`, `key_id`, candidate key IDs, or Judge key ID.
 5. `CRYPTO_SECRET` must be explicitly configured. `SessionSecret` fallback is not accepted for Fusion secret storage.
@@ -65,12 +67,18 @@ These decisions are binding for the first implementation pass:
 | 0 | Planning baseline | Complete | Docs exist, no stale open decisions, diff check passes |
 | 1 | Secret, settings, and base URL guard | Complete | Explicit crypto-secret guard, Fusion settings, SSRF validation tests pass |
 | 2 | Data models and migrations | Complete | Fusion key/config models migrate on SQLite and ownership tests pass |
-| 3 | Management API | Complete | `/api/fusion` key/config CRUD passes controller tests; test endpoints are non-user-facing fail-closed stubs |
+| 3 | Management API | Complete | `/api/fusion` key/config CRUD passes controller tests; config test remains fail-closed |
 | 4 | Fusion engine and billing | Complete | Parallel candidate, Judge synthesis, Fusion expression billing tests pass |
 | 5 | Relay endpoint | Complete | `/v1/fusion/chat/completions` enforces auth, billing, no direct-key bypass, and returns OpenAI-compatible output |
 | 6 | Frontend user and admin UI | Complete | User key/config pages and admin settings work in the active frontend theme |
 | 7 | Security and compatibility validation | Complete | Existing relay unchanged, Fusion abuse/security checks pass |
 | 8 | Release handoff | Complete | Docs updated with final status, validation evidence, and deployment notes |
+| 9 | Upstream templates and standard `/v1` Fusion entry | Complete | `/v1/chat/completions` Fusion alias routing, compatibility routes, DB-backed templates, per-key JSON config, and key probe UI are implemented |
+| 10 | Stream and Responses compatibility | Complete | `/v1/chat/completions stream=true` and `/v1/responses` with `model=fusion:xxx` are routed through billed Fusion execution |
+| 11 | Agent tools compatibility | Complete | Modern `tools`/`tool_choice` pass through to candidates; first successful candidate `tool_calls` are returned without Judge |
+| 12 | Stream heartbeat keepalive | Complete | Stream clients receive early SSE headers and heartbeat comments while candidate/Judge aggregation is still running |
+| 13 | Agent tool observation loop | Complete | Responses `function_call` and `function_call_output` history is preserved when Fusion calls candidates |
+| 14 | Agent upstream streaming resilience | Complete | Tool/stream candidate and Judge calls use internal SSE parsing with first-response/idle timeout semantics |
 
 ## Stage 0: Planning Baseline
 
@@ -259,7 +267,7 @@ Implemented behavior:
 - `service/fusion.go` runs saved-config-only Fusion execution with bounded parallel candidate calls and a Judge synthesis call.
 - Candidate and Judge calls use user-owned encrypted keys, re-check saved `base_url` against current Fusion SSRF policy, and do not use admin `Channel` distribution.
 - Redirect following is disabled for Fusion upstream calls; 3xx responses are treated as upstream failures.
-- `stream=true`, `n>1`, tools, tool_choice, functions, and function_call are rejected in v1.
+- `stream=true` is normalized to non-streaming upstream Fusion execution; modern tools/tool_choice pass through to candidate calls; legacy functions/function_call and `n>1` are still rejected in v1.
 - Missing upstream usage falls back to conservative local token estimates.
 - Failed candidates keep estimated prompt tokens once an upstream request was attempted, so the failed-candidate billing policy can charge them later if enabled.
 - Candidate output is truncated before Judge prompt construction; Judge input is trimmed against the configured token cap.
@@ -307,7 +315,7 @@ Implemented behavior:
 - `/v1/fusion/chat/completions` is mounted under `TokenAuth`, `SystemPerformanceCheck`, `RouteTag("fusion")`, and `ModelRequestRateLimit`, without `middleware.Distribute()`.
 - Disabled Fusion and missing persistent `CRYPTO_SECRET` fail before raw body parsing, config lookup, key decryption, billing, or upstream calls.
 - Raw request JSON rejects direct upstream credential/routing fields before parsing into `dto.GeneralOpenAIRequest`.
-- V1 rejects unsupported chat fields: `stream=true`, `n>1`, `tools`, `tool_choice`, `functions`, and `function_call`.
+- V1 accepts `stream=true` as a final-result SSE compatibility layer, passes modern `tools` / `tool_choice` to candidate calls, and rejects unsupported chat fields: `n>1`, legacy `functions`, and legacy `function_call`.
 - Token model limits are manually enforced against the Fusion alias because the route bypasses normal channel distribution.
 - The requested Fusion alias is set as `original_model` / `ContextKeyOriginalModel` before relay info and billing setup.
 - Platform service quota is pre-consumed before candidate or Judge calls, then settled or refunded through the existing `BillingSession` path.
@@ -481,6 +489,189 @@ git diff --check -- docs\fusion: pass
 git status --short: shows only Fusion docs staged/modified plus pre-existing unrelated local files outside Stage 8 scope
 ```
 
+## Stage 9: Upstream Templates And Standard `/v1` Fusion Entry
+
+State: Complete
+
+Primary files:
+
+- `model/fusion_upstream_template.go`
+- `model/fusion_api_key.go`
+- `service/fusion.go`
+- `controller/fusion.go`
+- `router/relay-router.go`
+- `web/default/src/features/fusion/*`
+- `web/default/src/features/system-settings/models/fusion-settings-card.tsx`
+
+Completion criteria:
+
+- `POST /v1/chat/completions` routes `model=fusion:xxx` into Fusion while ordinary models still use the normal relay distributor.
+- `POST /v1/responses` routes `model=fusion:xxx` into Fusion while ordinary Responses models still use the normal relay distributor.
+- `POST /fusion` and `POST /v1/fusion/chat/completions` remain mounted as compatibility aliases.
+- `fusion_upstream_templates` stores administrator-managed protocol templates as cross-database GORM models with TEXT JSON fields.
+- Fusion keys store `template_id` and per-key `upstream_config` JSON.
+- The Fusion engine merges template defaults and per-key config before building upstream requests.
+- User key create/edit UI lets users choose an upstream protocol template and edit extra request config JSON.
+- Key test/probe can return `detected_config` and fill it into the UI without saving automatically.
+- Admin Fusion settings expose upstream template management.
+- Ordinary `/v1/chat/completions` models remain unchanged.
+
+Validation:
+
+```powershell
+go test ./model ./service ./controller ./router -run Fusion -count=1
+cd web/default
+bun run typecheck
+bun run build
+```
+
+## Stage 10: Stream And Responses Compatibility
+
+State: Complete
+
+Primary files:
+
+- `constant/context_key.go`
+- `middleware/distributor.go`
+- `controller/relay.go`
+- `controller/fusion.go`
+- `controller/fusion_test.go`
+- `service/fusion.go`
+- `service/fusion_test.go`
+- `docs/fusion/*`
+
+Completion criteria:
+
+- `POST /v1/chat/completions` with `model=fusion:xxx` and `stream=true` no longer fails only because of streaming.
+- Fusion still executes candidate and Judge upstream calls internally as non-streaming requests.
+- Chat stream clients receive an SSE-compatible final `chat.completion.chunk` followed by `[DONE]`.
+- `POST /v1/responses` with `model=fusion:xxx` routes into billed Fusion execution while ordinary Responses requests continue through normal relay distribution.
+- Responses requests convert text `input`, string `instructions`, sampling fields, `max_output_tokens`, and `stream` into the internal Fusion chat request.
+- Responses stream clients receive final-result `response.output_text.delta` and `response.completed` SSE events.
+
+Validation result recorded on 2026-06-22:
+
+```text
+go test ./controller ./middleware ./router -run "Fusion|Distribute" -count=1: pass
+go test ./model ./service ./controller ./router ./middleware -run "Fusion|Token|Distribute" -count=1: pass
+```
+
+## Stage 11: Agent Tools Compatibility
+
+State: Complete
+
+Primary files:
+
+- `controller/fusion.go`
+- `controller/fusion_test.go`
+- `service/fusion.go`
+- `service/fusion_test.go`
+- `docs/fusion/*`
+
+Completion criteria:
+
+- Chat and Responses Fusion requests accept modern `tools` and `tool_choice`.
+- Candidate upstream requests receive `tools` and `tool_choice`.
+- If a successful candidate returns `tool_calls`, Fusion returns that tool call to the client and does not call Judge.
+- Tool-call selection is deterministic `first_success` by configured candidate order.
+- Chat stream returns a final tool_call SSE chunk plus `[DONE]`.
+- Responses stream returns `response.output_item.done` for `function_call` plus `response.completed`.
+- Legacy `functions` and `function_call` remain rejected.
+
+Validation result recorded on 2026-06-22:
+
+```text
+go test ./service ./controller -run "Fusion.*Tool|Fusion|Responses" -count=1: pass
+go test ./model ./service ./controller ./router ./middleware -run "Fusion|Token|Distribute" -count=1: pass
+```
+
+## Stage 12: Stream Heartbeat Keepalive
+
+State: Complete
+
+Primary files:
+
+- `controller/fusion.go`
+- `controller/fusion_test.go`
+- `docs/fusion/*`
+
+Problem fixed:
+
+- Before this stage, Fusion `stream=true` compatibility only wrote SSE headers and the final chunk after `service.RunFusionEngine` completed.
+- Slow candidate and Judge calls could leave Codex/Claude Code style clients with no response bytes for many seconds, causing reconnect loops or idle timeout behavior even though the request eventually succeeded.
+
+Completion criteria:
+
+- Stream requests still run Fusion internally as non-streaming candidate/Judge aggregation.
+- Pre-flight validation, token/group/model-limit checks, config lookup, and platform pre-consume still fail with normal JSON errors before SSE headers are committed.
+- After pre-consume succeeds, Chat and Responses stream handlers open SSE immediately and send `: PING` comments while aggregation runs.
+- Only the request goroutine writes SSE data; the Fusion execution goroutine uses a copied Gin context and returns results through a channel.
+- Chat stream still ends with final `chat.completion.chunk` plus `[DONE]`.
+- Responses stream still ends with final Responses SSE events.
+- Consume logs now record the external `stream=true` flag instead of the internal non-streaming upstream execution flag.
+
+Validation result recorded on 2026-06-22:
+
+```text
+go test ./controller -run "Fusion.*Stream|Fusion.*Responses|Fusion" -count=1: pass
+```
+
+## Stage 13: Agent Tool Observation Loop
+
+State: Complete
+
+Primary files:
+
+- `controller/fusion.go`
+- `controller/fusion_test.go`
+- `docs/fusion/*`
+
+Completion criteria:
+
+- `/v1/responses` Fusion input conversion preserves previous `function_call` items as internal chat assistant `tool_calls`.
+- `/v1/responses` Fusion input conversion preserves `function_call_output` items as internal chat `role=tool` messages with the matching `call_id`.
+- Candidate upstream requests receive the tool observation history before deciding whether to call another tool or produce final text.
+- Existing `first_success` tool-call selection and Judge synthesis behavior remain unchanged.
+
+Validation result recorded on 2026-06-22:
+
+```text
+go test ./controller -run TestResponsesFusionPreservesFunctionCallOutputForCandidates -count=1: pass
+go test ./service ./controller -run "Fusion.*Tool|Fusion|Responses" -count=1: pass
+go test ./model ./service ./controller ./router ./middleware -run "Fusion|Token|Distribute" -count=1: pass
+```
+
+## Stage 14: Agent Upstream Streaming Resilience
+
+State: Complete
+
+Primary files:
+
+- `service/fusion.go`
+- `service/fusion_test.go`
+- `docs/fusion/*`
+
+Problem fixed:
+
+- Codex/Claude Code style clients can send long-running agent turns to Fusion.
+- Before this stage, Fusion forced candidate upstream calls to `stream=false` and waited for one complete JSON body. Judge calls also stayed non-streaming. Slow reasoning/tool models could return HTTP 200 and then stay silent until Fusion's timeout expired, producing `fusion minimum successes not met` or Judge timeout errors.
+
+Completion criteria:
+
+- If a Fusion request is stream/tool-like, candidate and Judge upstream calls are sent with `stream=true`.
+- Fusion consumes OpenAI-compatible upstream SSE internally and reconstructs text, tool calls, finish reason, and usage.
+- In the internal SSE path, `timeout_ms` is treated as first-response / idle timeout. An upstream stream can exceed that wall-clock duration if it keeps sending events before the idle timer expires.
+- Streaming tool-call deltas are assembled into final `tool_calls` before the existing `first_success` tool-call selection.
+- Ordinary non-tool, non-stream Fusion requests continue to use non-streaming upstream calls.
+
+Validation result recorded on 2026-06-22:
+
+```text
+go test ./service -run "FusionEngineAllowsActiveStreamBeyondConfiguredIdleTimeout|FusionEngineStreamsAgentCandidateToAvoidBodyTimeout|FusionEngineStreamsJudgeForExternalStreamRequest|FusionEngineParsesStreamingToolCallCandidate" -count=1: pass
+go test ./service ./controller -run "Fusion.*Tool|Fusion|Responses|FusionEngineStreams|FusionEngineParses" -count=1: pass
+go test ./model ./service ./controller ./router ./middleware -run "Fusion|Token|Distribute" -count=1: pass
+```
+
 ## Update Rules
 
 When working on Fusion:
@@ -504,7 +695,7 @@ Allowed state values:
 Fusion implementation handoff is done when all of these are true:
 
 - A normal user can manage upstream keys and Fusion configs without seeing stored plaintext secrets.
-- A normal API token can call `/v1/fusion/chat/completions` only when Fusion is globally enabled and the token may access the Fusion model alias.
+- A normal API token can call `/v1/chat/completions` or `/v1/responses` with `model=fusion:xxx`, `/fusion`, or `/v1/fusion/chat/completions` only when Fusion is globally enabled and the token may access the Fusion model alias.
 - Platform service quota is charged before any upstream call and settled after completion.
 - User-owned upstream keys are never usable as a direct free proxy.
 - Failed candidate charging follows admin policy.
@@ -514,7 +705,8 @@ Fusion implementation handoff is done when all of these are true:
 
 Release gaps that remain explicit:
 
-- Key/config live test execution is not part of v1; backend stubs fail closed with `501` and the frontend no longer exposes test controls.
-- No live real-provider smoke test has been run for `/v1/fusion/chat/completions`.
+- Config live test execution is not part of v1; the backend config test stub still fails closed with `501`.
+- Key test/probe execution is implemented as a configuration helper and does not enter Fusion billing.
+- No live real-provider smoke test has been run for `/v1/chat/completions` or `/v1/responses` with `model=fusion:xxx`.
 - Broad backend test sweeps still expose existing non-Fusion channel affinity usage cache test isolation failures.
 - Full frontend lint still exposes existing non-Fusion lint debt outside the Fusion change set.

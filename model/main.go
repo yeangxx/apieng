@@ -280,11 +280,15 @@ func migrateDB() error {
 		&SubscriptionPreConsumeRecord{},
 		&CustomOAuthProvider{},
 		&UserOAuthBinding{},
+		&FusionUpstreamTemplate{},
 		&FusionAPIKey{},
 		&FusionConfig{},
 		&PerfMetric{},
 	)
 	if err != nil {
+		return err
+	}
+	if _, err := EnsureDefaultFusionUpstreamTemplate(); err != nil {
 		return err
 	}
 	if common.UsingSQLite {
@@ -331,6 +335,7 @@ func migrateDBFast() error {
 		{&SubscriptionPreConsumeRecord{}, "SubscriptionPreConsumeRecord"},
 		{&CustomOAuthProvider{}, "CustomOAuthProvider"},
 		{&UserOAuthBinding{}, "UserOAuthBinding"},
+		{&FusionUpstreamTemplate{}, "FusionUpstreamTemplate"},
 		{&FusionAPIKey{}, "FusionAPIKey"},
 		{&FusionConfig{}, "FusionConfig"},
 		{&PerfMetric{}, "PerfMetric"},
@@ -366,6 +371,9 @@ func migrateDBFast() error {
 		if err := DB.AutoMigrate(&SubscriptionPlan{}); err != nil {
 			return err
 		}
+	}
+	if _, err := EnsureDefaultFusionUpstreamTemplate(); err != nil {
+		return err
 	}
 	common.SysLog("database migrated")
 	return nil

@@ -18,7 +18,9 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 import type { TFunction } from 'i18next'
+
 import { parseQuotaFromDollars, quotaUnitsToDollars } from '@/lib/format'
+
 import { DEFAULT_GROUP } from '../constants'
 import { type ApiKeyFormData, type ApiKey } from '../types'
 
@@ -34,6 +36,7 @@ export function getApiKeyFormSchema(t: TFunction) {
       expired_time: z.date().optional(),
       unlimited_quota: z.boolean(),
       model_limits: z.array(z.string()),
+      fusion_model_alias: z.string().optional(),
       allow_ips: z.string().optional(),
       group: z.string().optional(),
       cross_group_retry: z.boolean().optional(),
@@ -69,6 +72,7 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   expired_time: undefined,
   unlimited_quota: true,
   model_limits: [],
+  fusion_model_alias: '',
   allow_ips: '',
   group: DEFAULT_GROUP,
   cross_group_retry: true,
@@ -95,6 +99,8 @@ export function getApiKeyFormDefaultValues(
 export function transformFormDataToPayload(
   data: ApiKeyFormValues
 ): ApiKeyFormData {
+  const fusionModelAlias = data.fusion_model_alias?.trim()
+  const modelLimits = fusionModelAlias ? [fusionModelAlias] : data.model_limits
   return {
     name: data.name,
     remain_quota: data.unlimited_quota
@@ -104,8 +110,8 @@ export function transformFormDataToPayload(
       ? Math.floor(data.expired_time.getTime() / 1000)
       : -1,
     unlimited_quota: data.unlimited_quota,
-    model_limits_enabled: data.model_limits.length > 0,
-    model_limits: data.model_limits.join(','),
+    model_limits_enabled: modelLimits.length > 0,
+    model_limits: modelLimits.join(','),
     allow_ips: data.allow_ips || '',
     group: data.group || '',
     cross_group_retry: data.group === 'auto' ? !!data.cross_group_retry : false,
@@ -118,6 +124,11 @@ export function transformFormDataToPayload(
 export function transformApiKeyToFormDefaults(
   apiKey: ApiKey
 ): ApiKeyFormValues {
+  const modelLimits = apiKey.model_limits
+    ? apiKey.model_limits.split(',').filter(Boolean)
+    : []
+  const fusionModelAlias =
+    modelLimits.find((model) => model.startsWith('fusion:')) ?? ''
   return {
     name: apiKey.name,
     remain_quota_dollars: apiKey.unlimited_quota
@@ -128,9 +139,8 @@ export function transformApiKeyToFormDefaults(
         ? new Date(apiKey.expired_time * 1000)
         : undefined,
     unlimited_quota: apiKey.unlimited_quota,
-    model_limits: apiKey.model_limits
-      ? apiKey.model_limits.split(',').filter(Boolean)
-      : [],
+    model_limits: modelLimits,
+    fusion_model_alias: fusionModelAlias,
     allow_ips: apiKey.allow_ips || '',
     group: apiKey.group || DEFAULT_GROUP,
     cross_group_retry: !!apiKey.cross_group_retry,

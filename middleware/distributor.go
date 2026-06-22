@@ -38,6 +38,13 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
+		if isFusionChatCompletionsRequest(c, modelRequest.Model) {
+			common.SetContextKey(c, constant.ContextKeyIsFusionRequest, true)
+			common.SetContextKey(c, constant.ContextKeyOriginalModel, modelRequest.Model)
+			common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
+			c.Next()
+			return
+		}
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
 			if err != nil {
@@ -167,6 +174,12 @@ func Distribute() func(c *gin.Context) {
 			service.RecordChannelAffinity(c, channel.Id)
 		}
 	}
+}
+
+func isFusionChatCompletionsRequest(c *gin.Context, modelName string) bool {
+	return c.Request.Method == http.MethodPost &&
+		(c.Request.URL.Path == "/v1/chat/completions" || c.Request.URL.Path == "/v1/responses") &&
+		strings.HasPrefix(strings.TrimSpace(modelName), "fusion:")
 }
 
 // channelSupportsRequestPath reports whether a channel can serve the request path.

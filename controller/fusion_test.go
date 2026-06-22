@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -17,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -63,7 +67,7 @@ func setupFusionControllerTestDB(t *testing.T) {
 	require.NoError(t, err)
 	model.DB = db
 	model.LOG_DB = db
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Log{}, &model.UserSubscription{}, &model.FusionAPIKey{}, &model.FusionConfig{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Log{}, &model.UserSubscription{}, &model.FusionUpstreamTemplate{}, &model.FusionAPIKey{}, &model.FusionConfig{}))
 	t.Cleanup(func() {
 		sqlDB, err := db.DB()
 		if err == nil {
@@ -178,8 +182,9 @@ func fusionRelayContext(t *testing.T, body any, userId int) (*httptest.ResponseR
 	common.SetContextKey(ctx, constant.ContextKeyTokenId, userId*10)
 	common.SetContextKey(ctx, constant.ContextKeyTokenKey, fmt.Sprintf("fusion-token-%d", userId))
 	common.SetContextKey(ctx, constant.ContextKeyTokenUnlimited, false)
-	common.SetContextKey(ctx, constant.ContextKeyTokenGroup, "")
-	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, false)
+	common.SetContextKey(ctx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, true)
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, map[string]bool{"fusion:research": true})
 	return recorder, ctx
 }
 
@@ -189,6 +194,62 @@ func fusionRelayJSONRequest(t *testing.T, body any, userId int) *httptest.Respon
 	t.Helper()
 	recorder, ctx := fusionRelayContext(t, body, userId)
 	FusionChatCompletions(ctx)
+	return recorder
+}
+
+func fusionStandardChatRelayJSONRequest(t *testing.T, body any, userId int) *httptest.ResponseRecorder {
+	t.Helper()
+	data, err := common.Marshal(body)
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(data))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("id", userId)
+	ctx.Set("token_id", userId*10)
+	ctx.Set("token_key", fmt.Sprintf("fusion-token-%d", userId))
+	ctx.Set("token_name", "fusion-token")
+	ctx.Set("token_quota", tokenQuotaForFusionRelayTest)
+	ctx.Set("token_unlimited_quota", true)
+	ctx.Set("user_quota", 1000000)
+	ctx.Set("group", "default")
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyUserQuota, tokenQuotaForFusionRelayTest)
+	common.SetContextKey(ctx, constant.ContextKeyTokenUnlimited, true)
+	common.SetContextKey(ctx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, true)
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, map[string]bool{"fusion:research": true})
+	common.SetContextKey(ctx, constant.ContextKeyIsFusionRequest, true)
+	Relay(ctx, types.RelayFormatOpenAI)
+	return recorder
+}
+
+func fusionStandardResponsesRelayJSONRequest(t *testing.T, body any, userId int) *httptest.ResponseRecorder {
+	t.Helper()
+	data, err := common.Marshal(body)
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(data))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("id", userId)
+	ctx.Set("token_id", userId*10)
+	ctx.Set("token_key", fmt.Sprintf("fusion-token-%d", userId))
+	ctx.Set("token_name", "fusion-token")
+	ctx.Set("token_quota", tokenQuotaForFusionRelayTest)
+	ctx.Set("token_unlimited_quota", true)
+	ctx.Set("user_quota", 1000000)
+	ctx.Set("group", "default")
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyUserQuota, tokenQuotaForFusionRelayTest)
+	common.SetContextKey(ctx, constant.ContextKeyTokenUnlimited, true)
+	common.SetContextKey(ctx, constant.ContextKeyTokenGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, true)
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, map[string]bool{"fusion:research": true})
+	common.SetContextKey(ctx, constant.ContextKeyIsFusionRequest, true)
+	Relay(ctx, types.RelayFormatOpenAIResponses)
 	return recorder
 }
 
@@ -202,6 +263,7 @@ func configureFusionRelayServer(t *testing.T, serverURL string, extra map[string
 		"fusion_setting.enabled":                "true",
 		"fusion_setting.allow_private_base_url": "true",
 		"fusion_setting.allowed_base_url_ports": fmt.Sprintf("[%s]", port),
+		"fusion_setting.allowed_token_groups":   `["default"]`,
 		"fusion_setting.billing_expr":           "cp + cc + jp + jc",
 		"fusion_setting.minimum_quota":          "1",
 	}
@@ -212,6 +274,34 @@ func configureFusionRelayServer(t *testing.T, serverURL string, extra map[string
 }
 
 func newFusionRelayTLSServer(t *testing.T, responses map[string]dto.OpenAITextResponse) (*httptest.Server, *atomic.Int32) {
+	return newFusionRelayTLSServerWithRequestCheck(t, responses, nil)
+}
+
+func newFusionRelayTLSServerWithRequestCheck(t *testing.T, responses map[string]dto.OpenAITextResponse, check func(*testing.T, dto.GeneralOpenAIRequest)) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var calls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		require.Equal(t, "/v1/chat/completions", r.URL.Path)
+		require.Equal(t, "Bearer sk-controller-fusion", r.Header.Get("Authorization"))
+		var request dto.GeneralOpenAIRequest
+		require.NoError(t, common.DecodeJson(r.Body, &request))
+		if check != nil {
+			check(t, request)
+		}
+		response, ok := responses[request.Model]
+		require.True(t, ok, "unexpected upstream model %s", request.Model)
+		w.Header().Set("Content-Type", "application/json")
+		data, err := common.Marshal(response)
+		require.NoError(t, err)
+		_, err = w.Write(data)
+		require.NoError(t, err)
+	}))
+	t.Cleanup(server.Close)
+	return server, &calls
+}
+
+func newDelayedFusionRelayTLSServer(t *testing.T, delay time.Duration, responses map[string]dto.OpenAITextResponse) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var calls atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -222,6 +312,7 @@ func newFusionRelayTLSServer(t *testing.T, responses map[string]dto.OpenAITextRe
 		require.NoError(t, common.DecodeJson(r.Body, &request))
 		response, ok := responses[request.Model]
 		require.True(t, ok, "unexpected upstream model %s", request.Model)
+		time.Sleep(delay)
 		w.Header().Set("Content-Type", "application/json")
 		data, err := common.Marshal(response)
 		require.NoError(t, err)
@@ -292,6 +383,41 @@ func fusionRelayResponse(modelName string, content string, promptTokens int, com
 	}
 }
 
+func fusionRelayToolCallResponse(modelName string, callID string, toolName string, arguments string, promptTokens int, completionTokens int) dto.OpenAITextResponse {
+	message := dto.Message{
+		Role:    "assistant",
+		Content: "",
+	}
+	message.SetToolCalls([]dto.ToolCallResponse{
+		{
+			ID:   callID,
+			Type: "function",
+			Function: dto.FunctionResponse{
+				Name:      toolName,
+				Arguments: arguments,
+			},
+		},
+	})
+	return dto.OpenAITextResponse{
+		Id:      "chatcmpl-tool-test",
+		Object:  "chat.completion",
+		Created: common.GetTimestamp(),
+		Model:   modelName,
+		Choices: []dto.OpenAITextResponseChoice{
+			{
+				Index:        0,
+				Message:      message,
+				FinishReason: "tool_calls",
+			},
+		},
+		Usage: dto.Usage{
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      promptTokens + completionTokens,
+		},
+	}
+}
+
 func TestCreateFusionAPIKeyRequiresPersistentCryptoSecret(t *testing.T) {
 	setupFusionControllerTestDB(t)
 	common.PersistentCryptoSecretConfigured = false
@@ -340,6 +466,139 @@ func TestFusionAPIKeyResponseDoesNotExposeSecrets(t *testing.T) {
 	assert.NotContains(t, listBody, "sk-visible-secret")
 	assert.NotContains(t, listBody, "api_key_ciphertext")
 	assert.NotContains(t, listBody, "key_fingerprint")
+}
+
+func TestUnsavedFusionAPIKeyTestReturnsDetectedConfigWithoutPersistingKey(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/chat/completions", r.URL.Path)
+		require.Equal(t, "Bearer sk-detect-secret", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusBadRequest)
+		_, err := w.Write([]byte(`{"error":{"message":"missing provider option for sk-detect-secret"}}`))
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+	configureFusionRelayServer(t, server.URL, nil)
+	template := &model.FusionUpstreamTemplate{
+		Name:          "Detectable",
+		ProviderLabel: "Detectable",
+		Protocol:      model.FusionProtocolOpenAIChatCompatible,
+		EndpointPath:  "/v1/chat/completions",
+		AuthType:      model.FusionAuthTypeBearer,
+		AuthHeader:    "Authorization",
+		DetectRules: `[{
+			"status_codes": [400],
+			"error_contains": ["missing provider option"],
+			"suggested_config": {
+				"body_overrides": {"provider_option": "required"}
+			}
+		}]`,
+		Enabled: true,
+	}
+	require.NoError(t, template.Insert())
+
+	recorder := fusionControllerJSONRequest(t, TestUnsavedFusionAPIKey, http.MethodPost, "/api/fusion/keys/test", 1, dto.FusionAPIKeyTestRequest{
+		FusionAPIKeyCreateRequest: dto.FusionAPIKeyCreateRequest{
+			Name:         "Probe",
+			Provider:     model.FusionProviderOpenAICompatible,
+			TemplateID:   template.Id,
+			BaseURL:      server.URL,
+			APIKey:       "sk-detect-secret",
+			DefaultModel: "gpt-4o-mini",
+			Models:       []string{"gpt-4o-mini"},
+		},
+	})
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.NotContains(t, recorder.Body.String(), "sk-detect-secret")
+	payload := decodeFusionControllerResponse(t, recorder)
+	assert.Equal(t, true, payload["success"])
+	data, ok := payload["data"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, false, data["ok"])
+	detected, ok := data["detected_config"].(map[string]interface{})
+	require.True(t, ok)
+	overrides, ok := detected["body_overrides"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "required", overrides["provider_option"])
+	total, err := model.CountFusionAPIKeysByUserId(1)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), total)
+}
+
+func TestSavedFusionAPIKeyTestUsesPayloadWithoutPersistingConfig(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	var calls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		require.Equal(t, "/v1/chat/completions", r.URL.Path)
+		require.Equal(t, "Bearer sk-saved-probe", r.Header.Get("Authorization"))
+		var request map[string]interface{}
+		require.NoError(t, common.DecodeJson(r.Body, &request))
+		assert.Equal(t, "enabled", request["gateway_flag"])
+		assert.Equal(t, "gpt-4o-mini", request["model"])
+		_, err := w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+	configureFusionRelayServer(t, server.URL, nil)
+	key := createFusionControllerKey(t, 1, "saved-probe")
+	originalBaseURL := key.BaseURL
+
+	recorder := fusionControllerJSONRequest(t, TestFusionAPIKey, http.MethodPost, "/api/fusion/keys/1/test", 1, dto.FusionAPIKeyUpdateRequest{
+		Name:           key.Name,
+		Provider:       key.Provider,
+		TemplateID:     key.TemplateID,
+		BaseURL:        server.URL,
+		DefaultModel:   "gpt-4o-mini",
+		Models:         []string{"gpt-4o-mini"},
+		UpstreamConfig: `{"body_overrides":{"gateway_flag":"enabled"}}`,
+		Status:         model.FusionKeyStatusEnabled,
+	}, gin.Param{Key: "id", Value: fmt.Sprintf("%d", key.Id)})
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	payload := decodeFusionControllerResponse(t, recorder)
+	data, ok := payload["data"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, true, data["ok"])
+	assert.Equal(t, int32(1), calls.Load())
+	reloaded, err := model.GetFusionAPIKeyByUserAndId(1, key.Id)
+	require.NoError(t, err)
+	assert.Equal(t, originalBaseURL, reloaded.BaseURL)
+	assert.JSONEq(t, "{}", reloaded.UpstreamConfig)
+}
+
+func TestAdminFusionUpstreamTemplateCRUD(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	createRecorder := fusionControllerJSONRequest(t, AdminCreateFusionUpstreamTemplate, http.MethodPost, "/api/fusion/admin/upstream-templates", 1, dto.FusionUpstreamTemplateRequest{
+		Name:                 "Gateway",
+		ProviderLabel:        "Gateway",
+		Protocol:             model.FusionProtocolOpenAIChatCompatible,
+		EndpointPath:         "/gateway/chat",
+		AuthType:             model.FusionAuthTypeBearer,
+		AuthHeader:           "Authorization",
+		DefaultHeaders:       `{"X-Gateway":"1"}`,
+		DefaultQuery:         `{}`,
+		DefaultBodyOverrides: `{}`,
+		DetectRules:          `[]`,
+		Enabled:              true,
+		Sort:                 10,
+	})
+	require.Equal(t, http.StatusOK, createRecorder.Code)
+	payload := decodeFusionControllerResponse(t, createRecorder)
+	data, ok := payload["data"].(map[string]interface{})
+	require.True(t, ok)
+	id := int(data["id"].(float64))
+
+	listRecorder := fusionControllerRequest(t, AdminGetFusionUpstreamTemplates, http.MethodGet, "/api/fusion/admin/upstream-templates", 1)
+	require.Equal(t, http.StatusOK, listRecorder.Code)
+	assert.Contains(t, listRecorder.Body.String(), "Gateway")
+
+	deleteRecorder := fusionControllerRequest(t, AdminDeleteFusionUpstreamTemplate, http.MethodDelete, "/api/fusion/admin/upstream-templates/1", 1, gin.Param{
+		Key:   "id",
+		Value: fmt.Sprintf("%d", id),
+	})
+	require.Equal(t, http.StatusOK, deleteRecorder.Code)
 }
 
 func TestCreateFusionConfigRejectsForeignKeys(t *testing.T) {
@@ -445,7 +704,7 @@ func TestDeleteFusionAPIKeyRejectsConfigReferences(t *testing.T) {
 	assert.Contains(t, payload["message"], "used by a fusion config")
 }
 
-func TestFusionTestEndpointsFailClosedUntilEngineExists(t *testing.T) {
+func TestFusionTestEndpointsRunKeyProbeWithoutSavingDetectedConfig(t *testing.T) {
 	setupFusionControllerTestDB(t)
 	key := createFusionControllerKey(t, 1, "test")
 	fusionConfig := &model.FusionConfig{
@@ -464,23 +723,20 @@ func TestFusionTestEndpointsFailClosedUntilEngineExists(t *testing.T) {
 	require.NoError(t, fusionConfig.SetCandidateModels(nil))
 	require.NoError(t, fusionConfig.Insert())
 
-	disabledRecorder := fusionControllerRequest(t, TestFusionAPIKey, http.MethodPost, "/api/fusion/keys/1/test", 1, gin.Param{
+	recorder := fusionControllerRequest(t, TestFusionAPIKey, http.MethodPost, "/api/fusion/keys/1/test", 1, gin.Param{
 		Key:   "id",
 		Value: fmt.Sprintf("%d", key.Id),
 	})
-	require.Equal(t, http.StatusForbidden, disabledRecorder.Code)
-	assert.Contains(t, disabledRecorder.Body.String(), "Fusion is disabled")
+	require.Equal(t, http.StatusOK, recorder.Code)
+	payload := decodeFusionControllerResponse(t, recorder)
+	assert.Equal(t, true, payload["success"])
+	body := recorder.Body.String()
+	assert.Contains(t, body, `"ok":false`)
+	assert.NotContains(t, body, "not implemented")
 
 	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
 		"fusion_setting.enabled": "true",
 	}))
-	notImplementedRecorder := fusionControllerRequest(t, TestFusionAPIKey, http.MethodPost, "/api/fusion/keys/1/test", 1, gin.Param{
-		Key:   "id",
-		Value: fmt.Sprintf("%d", key.Id),
-	})
-	require.Equal(t, http.StatusNotImplemented, notImplementedRecorder.Code)
-	assert.Contains(t, notImplementedRecorder.Body.String(), "not implemented")
-
 	configRecorder := fusionControllerRequest(t, TestFusionConfig, http.MethodPost, "/api/fusion/configs/1/test", 1, gin.Param{
 		Key:   "id",
 		Value: fmt.Sprintf("%d", fusionConfig.Id),
@@ -602,6 +858,46 @@ func TestFusionRelayTokenModelLimitForbidsAlias(t *testing.T) {
 	assert.Equal(t, int32(0), calls.Load())
 }
 
+func TestFusionRelayRequiresFusionTokenGroup(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server, calls := newFusionRelayTLSServer(t, map[string]dto.OpenAITextResponse{})
+	configureFusionRelayServer(t, server.URL, map[string]string{
+		"fusion_setting.allowed_token_groups": `["fusion-basic"]`,
+	})
+	recorder, ctx := fusionRelayContext(t, gin.H{
+		"model": "fusion:research",
+		"messages": []gin.H{
+			{"role": "user", "content": "hello"},
+		},
+	}, 1)
+	common.SetContextKey(ctx, constant.ContextKeyTokenGroup, "default")
+
+	FusionChatCompletions(ctx)
+
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "Fusion models require a Fusion token group")
+	assert.Equal(t, int32(0), calls.Load())
+}
+
+func TestFusionRelayRequiresBoundFusionModelLimit(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server, calls := newFusionRelayTLSServer(t, map[string]dto.OpenAITextResponse{})
+	configureFusionRelayServer(t, server.URL, nil)
+	recorder, ctx := fusionRelayContext(t, gin.H{
+		"model": "fusion:research",
+		"messages": []gin.H{
+			{"role": "user", "content": "hello"},
+		},
+	}, 1)
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, false)
+
+	FusionChatCompletions(ctx)
+
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "exactly one enabled Fusion model limit")
+	assert.Equal(t, int32(0), calls.Load())
+}
+
 func TestFusionRelayInsufficientQuotaBlocksBeforeUpstream(t *testing.T) {
 	setupFusionControllerTestDB(t)
 	server, calls := newFusionRelayTLSServer(t, map[string]dto.OpenAITextResponse{})
@@ -694,4 +990,523 @@ func TestFusionRelayReturnsOpenAIResponseAndRecordsBilling(t *testing.T) {
 	assert.Equal(t, true, other["fusion"])
 	assert.NotContains(t, log.Other, "candidate answer")
 	assert.NotContains(t, log.Other, "sk-controller-fusion")
+}
+
+func TestStandardChatCompletionsFusionAliasUsesFusionRelay(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server, calls := newFusionRelayTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a": fusionRelayResponse("candidate-a", "candidate answer", 10, 2),
+		"judge-model": fusionRelayResponse("judge-model", "final answer", 5, 3),
+	})
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+
+	recorder := fusionStandardChatRelayJSONRequest(t, gin.H{
+		"model": "fusion:research",
+		"messages": []gin.H{
+			{"role": "user", "content": "hello"},
+		},
+	}, 1)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, int32(2), calls.Load())
+	var response dto.OpenAITextResponse
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, "fusion:research", response.Model)
+	require.Len(t, response.Choices, 1)
+	assert.Equal(t, "final answer", response.Choices[0].Message.StringContent())
+}
+
+func TestStandardChatCompletionsFusionStreamReturnsCompatibleSSE(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server, calls := newFusionRelayTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a": fusionRelayResponse("candidate-a", "candidate answer", 10, 2),
+		"judge-model": fusionRelayResponse("judge-model", "final answer", 5, 3),
+	})
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+
+	recorder := fusionStandardChatRelayJSONRequest(t, gin.H{
+		"model":  "fusion:research",
+		"stream": true,
+		"messages": []gin.H{
+			{"role": "user", "content": "hello"},
+		},
+	}, 1)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
+	assert.Equal(t, int32(2), calls.Load())
+	body := recorder.Body.String()
+	assert.Contains(t, body, "chat.completion.chunk")
+	assert.Contains(t, body, "fusion:research")
+	assert.Contains(t, body, "final answer")
+	assert.Contains(t, body, "[DONE]")
+}
+
+func TestFusionChatCompletionsStreamSendsHeartbeatWhileFusionRuns(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	originalPingInterval := fusionStreamPingInterval
+	fusionStreamPingInterval = 20 * time.Millisecond
+	t.Cleanup(func() {
+		fusionStreamPingInterval = originalPingInterval
+	})
+
+	server, calls := newDelayedFusionRelayTLSServer(t, 120*time.Millisecond, map[string]dto.OpenAITextResponse{
+		"candidate-a": fusionRelayResponse("candidate-a", "candidate answer", 10, 2),
+		"judge-model": fusionRelayResponse("judge-model", "final answer", 5, 3),
+	})
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+
+	router := gin.New()
+	router.POST("/v1/chat/completions", func(ctx *gin.Context) {
+		ctx.Set("id", 1)
+		ctx.Set("token_id", 10)
+		ctx.Set("token_key", "fusion-token-1")
+		ctx.Set("token_name", "fusion-token")
+		ctx.Set("token_quota", initialQuota)
+		ctx.Set("token_unlimited_quota", true)
+		common.SetContextKey(ctx, constant.ContextKeyUserId, 1)
+		common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+		common.SetContextKey(ctx, constant.ContextKeyUsingGroup, "default")
+		common.SetContextKey(ctx, constant.ContextKeyUserQuota, initialQuota)
+		common.SetContextKey(ctx, constant.ContextKeyUserEmail, "fusion@example.com")
+		common.SetContextKey(ctx, constant.ContextKeyUserName, "fusion-user-1")
+		common.SetContextKey(ctx, constant.ContextKeyUserSetting, dto.UserSetting{BillingPreference: "wallet_only"})
+		common.SetContextKey(ctx, constant.ContextKeyTokenId, 10)
+		common.SetContextKey(ctx, constant.ContextKeyTokenKey, "fusion-token-1")
+		common.SetContextKey(ctx, constant.ContextKeyTokenUnlimited, true)
+		common.SetContextKey(ctx, constant.ContextKeyTokenGroup, "default")
+		common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, true)
+		common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, map[string]bool{"fusion:research": true})
+		FusionChatCompletions(ctx)
+	})
+	appServer := httptest.NewServer(router)
+	t.Cleanup(appServer.Close)
+
+	payload, err := common.Marshal(gin.H{
+		"model":  "fusion:research",
+		"stream": true,
+		"messages": []gin.H{
+			{"role": "user", "content": "hello"},
+		},
+	})
+	require.NoError(t, err)
+	request, err := http.NewRequest(http.MethodPost, appServer.URL+"/v1/chat/completions", bytes.NewReader(payload))
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := appServer.Client().Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	assert.Contains(t, response.Header.Get("Content-Type"), "text/event-stream")
+	reader := bufio.NewReader(response.Body)
+	firstLine, err := reader.ReadString('\n')
+	require.NoError(t, err)
+	assert.Equal(t, ": PING\n", firstLine)
+	rest, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	body := string(rest)
+	assert.Contains(t, body, "chat.completion.chunk")
+	assert.Contains(t, body, "final answer")
+	assert.Contains(t, body, "[DONE]")
+	assert.Equal(t, int32(2), calls.Load())
+}
+
+func TestStandardChatCompletionsFusionToolsReturnsToolCall(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server, calls := newFusionRelayTLSServerWithRequestCheck(t, map[string]dto.OpenAITextResponse{
+		"candidate-a": fusionRelayToolCallResponse("candidate-a", "call_read", "read_file", `{"path":"main.go"}`, 10, 1),
+		"judge-model": fusionRelayResponse("judge-model", "should not run", 5, 3),
+	}, func(t *testing.T, request dto.GeneralOpenAIRequest) {
+		if request.Model != "candidate-a" {
+			return
+		}
+		require.Len(t, request.Tools, 1)
+		assert.Equal(t, "read_file", request.Tools[0].Function.Name)
+		assert.NotNil(t, request.Tools[0].Function.Parameters)
+		require.NotNil(t, request.ToolChoice)
+	})
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+
+	recorder := fusionStandardChatRelayJSONRequest(t, gin.H{
+		"model": "fusion:research",
+		"messages": []gin.H{
+			{"role": "user", "content": "read main.go"},
+		},
+		"tools": []gin.H{
+			{
+				"type": "function",
+				"function": gin.H{
+					"name":        "read_file",
+					"description": "Read a file",
+					"parameters": gin.H{
+						"type": "object",
+					},
+				},
+			},
+		},
+		"tool_choice": gin.H{
+			"type": "function",
+			"function": gin.H{
+				"name": "read_file",
+			},
+		},
+	}, 1)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, int32(1), calls.Load())
+	var response dto.OpenAITextResponse
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.Len(t, response.Choices, 1)
+	assert.Equal(t, "tool_calls", response.Choices[0].FinishReason)
+	toolCalls := response.Choices[0].Message.ParseToolCalls()
+	require.Len(t, toolCalls, 1)
+	assert.Equal(t, "call_read", toolCalls[0].ID)
+	assert.Equal(t, "read_file", toolCalls[0].Function.Name)
+	assert.Equal(t, `{"path":"main.go"}`, toolCalls[0].Function.Arguments)
+}
+
+func TestStandardChatCompletionsFusionToolCallStreamReturnsSSE(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server, calls := newFusionRelayTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a": fusionRelayToolCallResponse("candidate-a", "call_read", "read_file", `{"path":"main.go"}`, 10, 1),
+		"judge-model": fusionRelayResponse("judge-model", "should not run", 5, 3),
+	})
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+
+	recorder := fusionStandardChatRelayJSONRequest(t, gin.H{
+		"model":  "fusion:research",
+		"stream": true,
+		"messages": []gin.H{
+			{"role": "user", "content": "read main.go"},
+		},
+		"tools": []gin.H{
+			{
+				"type": "function",
+				"function": gin.H{
+					"name": "read_file",
+				},
+			},
+		},
+	}, 1)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
+	assert.Equal(t, int32(1), calls.Load())
+	body := recorder.Body.String()
+	assert.Contains(t, body, "chat.completion.chunk")
+	assert.Contains(t, body, "tool_calls")
+	assert.Contains(t, body, "call_read")
+	assert.Contains(t, body, "read_file")
+	assert.Contains(t, body, "[DONE]")
+}
+
+func TestResponsesFusionAliasUsesFusionRelay(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server, calls := newFusionRelayTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a": fusionRelayResponse("candidate-a", "candidate answer", 10, 2),
+		"judge-model": fusionRelayResponse("judge-model", "final answer", 5, 3),
+	})
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+
+	recorder := fusionStandardResponsesRelayJSONRequest(t, gin.H{
+		"model":             "fusion:research",
+		"input":             "hello",
+		"max_output_tokens": 64,
+	}, 1)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, int32(2), calls.Load())
+	var response dto.OpenAIResponsesResponse
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, "response", response.Object)
+	assert.Equal(t, "fusion:research", response.Model)
+	assert.Contains(t, string(response.Status), "completed")
+	require.Len(t, response.Output, 1)
+	require.Len(t, response.Output[0].Content, 1)
+	assert.Equal(t, "output_text", response.Output[0].Content[0].Type)
+	assert.Equal(t, "final answer", response.Output[0].Content[0].Text)
+	require.NotNil(t, response.Usage)
+	assert.Equal(t, 15, response.Usage.InputTokens)
+	assert.Equal(t, 5, response.Usage.OutputTokens)
+}
+
+func TestResponsesFusionStreamReturnsCompatibleSSE(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server, calls := newFusionRelayTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a": fusionRelayResponse("candidate-a", "candidate answer", 10, 2),
+		"judge-model": fusionRelayResponse("judge-model", "final answer", 5, 3),
+	})
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+
+	recorder := fusionStandardResponsesRelayJSONRequest(t, gin.H{
+		"model":  "fusion:research",
+		"input":  "hello",
+		"stream": true,
+	}, 1)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
+	assert.Equal(t, int32(2), calls.Load())
+	body := recorder.Body.String()
+	expectedEvents := []string{
+		"response.created",
+		"response.in_progress",
+		"response.output_item.added",
+		"response.content_part.added",
+		"response.output_text.delta",
+		"response.output_text.done",
+		"response.content_part.done",
+		"response.output_item.done",
+		"response.completed",
+	}
+	lastEventIndex := -1
+	for _, eventType := range expectedEvents {
+		eventIndex := strings.Index(body, "event: "+eventType)
+		require.NotEqual(t, -1, eventIndex, eventType)
+		assert.Greater(t, eventIndex, lastEventIndex, eventType)
+		lastEventIndex = eventIndex
+	}
+	assert.Contains(t, body, "fusion:research")
+	assert.Contains(t, body, "final answer")
+}
+
+func TestResponsesFusionStreamTimeoutReturnsTimeoutErrorCode(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	var calls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		require.Equal(t, "/v1/chat/completions", r.URL.Path)
+		require.Equal(t, "Bearer sk-controller-fusion", r.Header.Get("Authorization"))
+		var request dto.GeneralOpenAIRequest
+		require.NoError(t, common.DecodeJson(r.Body, &request))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(50 * time.Millisecond)
+		data, err := common.Marshal(fusionRelayResponse(request.Model, "late answer", 10, 2))
+		require.NoError(t, err)
+		_, _ = w.Write(data)
+	}))
+	t.Cleanup(server.Close)
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	fusionConfig := createFusionRelayConfig(t, 1, key)
+	fusionConfig.TimeoutMS = 10
+	require.NoError(t, model.DB.Model(fusionConfig).Update("timeout_ms", fusionConfig.TimeoutMS).Error)
+
+	recorder := fusionStandardResponsesRelayJSONRequest(t, gin.H{
+		"model":  "fusion:research",
+		"input":  "hello",
+		"stream": true,
+	}, 1)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, int32(1), calls.Load())
+	body := recorder.Body.String()
+	assert.Contains(t, body, "event: error")
+	assert.Contains(t, body, string(types.ErrorCodeChannelResponseTimeExceeded))
+	assert.Contains(t, body, "upstream request timeout")
+	assert.NotContains(t, body, "context deadline exceeded")
+	assert.NotContains(t, body, string(types.ErrorCodeBadResponse))
+}
+
+func TestResponsesFusionToolsReturnsFunctionCall(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server, calls := newFusionRelayTLSServerWithRequestCheck(t, map[string]dto.OpenAITextResponse{
+		"candidate-a": fusionRelayToolCallResponse("candidate-a", "call_read", "read_file", `{"path":"main.go"}`, 10, 1),
+		"judge-model": fusionRelayResponse("judge-model", "should not run", 5, 3),
+	}, func(t *testing.T, request dto.GeneralOpenAIRequest) {
+		if request.Model != "candidate-a" {
+			return
+		}
+		require.Len(t, request.Tools, 1)
+		assert.Equal(t, "read_file", request.Tools[0].Function.Name)
+		require.NotNil(t, request.ToolChoice)
+	})
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+
+	recorder := fusionStandardResponsesRelayJSONRequest(t, gin.H{
+		"model": "fusion:research",
+		"input": "hello",
+		"tools": []gin.H{
+			{
+				"type":        "function",
+				"name":        "read_file",
+				"description": "Read a file",
+				"parameters": gin.H{
+					"type": "object",
+				},
+			},
+		},
+		"tool_choice": gin.H{
+			"type": "function",
+			"name": "read_file",
+		},
+	}, 1)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, int32(1), calls.Load())
+	var response dto.OpenAIResponsesResponse
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.Len(t, response.Output, 1)
+	assert.Equal(t, "function_call", response.Output[0].Type)
+	assert.Equal(t, "call_read", response.Output[0].CallId)
+	assert.Equal(t, "read_file", response.Output[0].Name)
+	assert.Equal(t, `{"path":"main.go"}`, response.Output[0].ArgumentsString())
+}
+
+func TestResponsesFusionPreservesFunctionCallOutputForCandidates(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server, calls := newFusionRelayTLSServerWithRequestCheck(t, map[string]dto.OpenAITextResponse{
+		"candidate-a": fusionRelayResponse("candidate-a", "candidate saw tool output", 10, 2),
+		"judge-model": fusionRelayResponse("judge-model", "final answer", 5, 3),
+	}, func(t *testing.T, request dto.GeneralOpenAIRequest) {
+		if request.Model != "candidate-a" {
+			return
+		}
+		require.Len(t, request.Messages, 4)
+		assert.Equal(t, "user", request.Messages[0].Role)
+		assert.Equal(t, "read index.html", request.Messages[0].StringContent())
+
+		assert.Equal(t, "assistant", request.Messages[1].Role)
+		toolCalls := request.Messages[1].ParseToolCalls()
+		require.Len(t, toolCalls, 1)
+		assert.Equal(t, "call_read", toolCalls[0].ID)
+		assert.Equal(t, "read_file", toolCalls[0].Function.Name)
+		assert.Equal(t, `{"path":"index.html"}`, toolCalls[0].Function.Arguments)
+
+		assert.Equal(t, "tool", request.Messages[2].Role)
+		assert.Equal(t, "call_read", request.Messages[2].ToolCallId)
+		assert.Contains(t, request.Messages[2].StringContent(), "<title>Home</title>")
+
+		assert.Equal(t, "user", request.Messages[3].Role)
+		assert.Equal(t, "summarize it", request.Messages[3].StringContent())
+	})
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+
+	recorder := fusionStandardResponsesRelayJSONRequest(t, gin.H{
+		"model": "fusion:research",
+		"input": []gin.H{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []gin.H{
+					{"type": "input_text", "text": "read index.html"},
+				},
+			},
+			{
+				"type":      "function_call",
+				"call_id":   "call_read",
+				"name":      "read_file",
+				"arguments": `{"path":"index.html"}`,
+			},
+			{
+				"type":    "function_call_output",
+				"call_id": "call_read",
+				"output":  "<html><title>Home</title></html>",
+			},
+			{
+				"type": "message",
+				"role": "user",
+				"content": []gin.H{
+					{"type": "input_text", "text": "summarize it"},
+				},
+			},
+		},
+	}, 1)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, int32(2), calls.Load())
+}
+
+func TestResponsesFusionToolCallStreamReturnsFunctionCallEvents(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server, calls := newFusionRelayTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a": fusionRelayToolCallResponse("candidate-a", "call_read", "read_file", `{"path":"main.go"}`, 10, 1),
+		"judge-model": fusionRelayResponse("judge-model", "should not run", 5, 3),
+	})
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+
+	recorder := fusionStandardResponsesRelayJSONRequest(t, gin.H{
+		"model":  "fusion:research",
+		"input":  "read main.go",
+		"stream": true,
+		"tools": []gin.H{
+			{
+				"type": "function",
+				"function": gin.H{
+					"name": "read_file",
+				},
+			},
+		},
+	}, 1)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
+	assert.Equal(t, int32(1), calls.Load())
+	body := recorder.Body.String()
+	expectedEvents := []string{
+		"response.created",
+		"response.in_progress",
+		"response.output_item.added",
+		"response.function_call_arguments.delta",
+		"response.function_call_arguments.done",
+		"response.output_item.done",
+		"response.completed",
+	}
+	lastEventIndex := -1
+	for _, eventType := range expectedEvents {
+		eventIndex := strings.Index(body, "event: "+eventType)
+		require.NotEqual(t, -1, eventIndex, eventType)
+		assert.Greater(t, eventIndex, lastEventIndex, eventType)
+		lastEventIndex = eventIndex
+	}
+	assert.Contains(t, body, "function_call")
+	assert.Contains(t, body, "call_read")
+	assert.Contains(t, body, "read_file")
 }

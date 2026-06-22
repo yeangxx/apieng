@@ -237,6 +237,7 @@ export function ModelMutateDrawer({
       'fusion_setting.allow_private_base_url': false,
       'fusion_setting.allowed_base_url_domains': '[]',
       'fusion_setting.allowed_base_url_ports': '[443]',
+      'fusion_setting.allowed_token_groups': '[]',
     }
     return getOptionValue(systemOptionsData.data, defaultModelSettings)
   }, [systemOptionsData])

@@ -593,6 +593,16 @@ func GetUserModels(c *gin.Context) {
 			}
 		}
 	}
+	configs, err := model.GetFusionConfigsByUserId(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	for _, config := range configs {
+		if config.Enabled && !common.StringsContains(models, config.ModelAlias) {
+			models = append(models, config.ModelAlias)
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

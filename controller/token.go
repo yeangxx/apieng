@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/fusion_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
@@ -164,6 +165,61 @@ func GetTokenUsage(c *gin.Context) {
 	})
 }
 
+func tokenModelLimitList(modelLimits string) []string {
+	rawLimits := strings.Split(modelLimits, ",")
+	limits := make([]string, 0, len(rawLimits))
+	for _, limit := range rawLimits {
+		limit = strings.TrimSpace(limit)
+		if limit != "" {
+			limits = append(limits, limit)
+		}
+	}
+	return limits
+}
+
+func isFusionModelAlias(modelName string) bool {
+	return strings.HasPrefix(strings.TrimSpace(modelName), "fusion:")
+}
+
+func validateTokenFusionBinding(userId int, group string, modelLimitsEnabled bool, modelLimits string) error {
+	group = strings.TrimSpace(group)
+	limits := tokenModelLimitList(modelLimits)
+	isFusionGroup := fusion_setting.IsFusionTokenGroup(group)
+	containsFusionAlias := false
+	for _, limit := range limits {
+		if isFusionModelAlias(limit) {
+			containsFusionAlias = true
+			break
+		}
+	}
+
+	if !isFusionGroup {
+		if containsFusionAlias {
+			return fmt.Errorf("Fusion models require a Fusion token group")
+		}
+		return nil
+	}
+
+	if !modelLimitsEnabled || len(limits) != 1 {
+		return fmt.Errorf("Fusion token group requires exactly one enabled Fusion model limit")
+	}
+	alias := limits[0]
+	if !isFusionModelAlias(alias) {
+		return fmt.Errorf("Fusion token group can only bind one Fusion model")
+	}
+	if err := model.ValidateFusionModelAlias(alias); err != nil {
+		return err
+	}
+	config, err := model.GetFusionConfigByUserAndAlias(userId, alias)
+	if err != nil {
+		return fmt.Errorf("Fusion config %s is not available for this user: %w", alias, err)
+	}
+	if !config.Enabled {
+		return fmt.Errorf("Fusion config %s is disabled", alias)
+	}
+	return nil
+}
+
 func AddToken(c *gin.Context) {
 	token := model.Token{}
 	err := c.ShouldBindJSON(&token)
@@ -199,6 +255,10 @@ func AddToken(c *gin.Context) {
 			"success": false,
 			"message": fmt.Sprintf("已达到最大令牌数量限制 (%d)", maxTokens),
 		})
+		return
+	}
+	if err := validateTokenFusionBinding(c.GetInt("id"), token.Group, token.ModelLimitsEnabled, token.ModelLimits); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	key, err := common.GenerateKey()
@@ -289,6 +349,10 @@ func UpdateToken(c *gin.Context) {
 	if statusOnly != "" {
 		cleanToken.Status = token.Status
 	} else {
+		if err := validateTokenFusionBinding(userId, token.Group, token.ModelLimitsEnabled, token.ModelLimits); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 		// If you add more fields, please also update token.Update()
 		cleanToken.Name = token.Name
 		cleanToken.ExpiredTime = token.ExpiredTime

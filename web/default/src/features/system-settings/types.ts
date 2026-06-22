@@ -209,6 +209,7 @@ export type ModelSettings = {
   'fusion_setting.allow_private_base_url': boolean
   'fusion_setting.allowed_base_url_domains': string
   'fusion_setting.allowed_base_url_ports': string
+  'fusion_setting.allowed_token_groups': string
 }
 
 export type BillingSettings = {

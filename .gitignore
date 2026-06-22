@@ -13,6 +13,10 @@ web/classic/dist
 web/node_modules
 web/dist
 .env
+config.env
+docker-compose.local.yml
+start.ps1
+docs/local/
 one-api
 new-api
 /__debug_bin*

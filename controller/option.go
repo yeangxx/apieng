@@ -102,6 +102,25 @@ func validateFusionAllowedBaseURLPortsOption(value string) error {
 	return nil
 }
 
+func validateFusionAllowedTokenGroupsOption(value string) error {
+	var groups []string
+	if err := common.UnmarshalJsonStr(value, &groups); err != nil {
+		return fmt.Errorf("fusion token groups must be a JSON string array: %w", err)
+	}
+	seen := make(map[string]struct{}, len(groups))
+	for _, group := range groups {
+		group = strings.TrimSpace(group)
+		if group == "" {
+			return fmt.Errorf("fusion token groups cannot contain empty entries")
+		}
+		if _, ok := seen[group]; ok {
+			return fmt.Errorf("fusion token group is duplicated: %s", group)
+		}
+		seen[group] = struct{}{}
+	}
+	return nil
+}
+
 func GetOptions(c *gin.Context) {
 	var options []*model.Option
 	optionValues := make(map[string]string)
@@ -378,6 +397,15 @@ func UpdateOption(c *gin.Context) {
 		}
 	case "fusion_setting.allowed_base_url_ports":
 		err = validateFusionAllowedBaseURLPortsOption(option.Value.(string))
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "fusion_setting.allowed_token_groups":
+		err = validateFusionAllowedTokenGroupsOption(option.Value.(string))
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,

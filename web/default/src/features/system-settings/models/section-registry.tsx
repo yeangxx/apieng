@@ -21,8 +21,8 @@ import { IoNetDeploymentSettingsSection } from '../integrations/ionet-deployment
 import type { ModelSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 import { ClaudeSettingsCard } from './claude-settings-card'
-import { GeminiSettingsCard } from './gemini-settings-card'
 import { FusionSettingsCard } from './fusion-settings-card'
+import { GeminiSettingsCard } from './gemini-settings-card'
 import { GlobalSettingsCard } from './global-settings-card'
 import { GrokSettingsCard } from './grok-settings-card'
 import { RoutingReliabilitySection } from './routing-reliability-section'
@@ -80,11 +80,9 @@ const MODELS_SECTIONS = [
             max_candidates_per_config:
               settings['fusion_setting.max_candidates_per_config'],
             max_parallel: settings['fusion_setting.max_parallel'],
-            default_timeout_ms:
-              settings['fusion_setting.default_timeout_ms'],
+            default_timeout_ms: settings['fusion_setting.default_timeout_ms'],
             max_timeout_ms: settings['fusion_setting.max_timeout_ms'],
-            service_model_name:
-              settings['fusion_setting.service_model_name'],
+            service_model_name: settings['fusion_setting.service_model_name'],
             billing_mode: settings['fusion_setting.billing_mode'],
             billing_expr: settings['fusion_setting.billing_expr'],
             minimum_quota: settings['fusion_setting.minimum_quota'],
@@ -102,6 +100,8 @@ const MODELS_SECTIONS = [
               settings['fusion_setting.allowed_base_url_domains'],
             allowed_base_url_ports:
               settings['fusion_setting.allowed_base_url_ports'],
+            allowed_token_groups:
+              settings['fusion_setting.allowed_token_groups'],
           },
         }}
       />

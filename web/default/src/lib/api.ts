@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import axios, { type AxiosRequestConfig } from 'axios'
 import { t } from 'i18next'
 import { toast } from 'sonner'
+
 import { useAuthStore } from '@/stores/auth-store'
 
 declare module 'axios' {
@@ -199,7 +200,10 @@ export async function getUserModels(): Promise<{
 export async function getUserGroups(): Promise<{
   success: boolean
   message?: string
-  data?: Record<string, { desc: string; ratio: number | string }>
+  data?: Record<
+    string,
+    { desc: string; ratio: number | string; fusion?: boolean }
+  >
 }> {
   const res = await api.get('/api/user/self/groups')
   return res.data

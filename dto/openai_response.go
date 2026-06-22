@@ -374,6 +374,12 @@ type ResponsesReasoningSummaryPart struct {
 	Text string `json:"text"`
 }
 
+type ResponsesStreamPart struct {
+	Type        string        `json:"type"`
+	Text        string        `json:"text,omitempty"`
+	Annotations []interface{} `json:"annotations,omitempty"`
+}
+
 const (
 	BuildInToolWebSearchPreview = "web_search_preview"
 	BuildInToolFileSearch       = "file_search"
@@ -390,17 +396,21 @@ const (
 
 // ResponsesStreamResponse 用于处理 /v1/responses 流式响应
 type ResponsesStreamResponse struct {
-	Type     string                   `json:"type"`
-	Response *OpenAIResponsesResponse `json:"response,omitempty"`
-	Delta    string                   `json:"delta,omitempty"`
-	Item     *ResponsesOutput         `json:"item,omitempty"`
+	Type           string                   `json:"type"`
+	Response       *OpenAIResponsesResponse `json:"response,omitempty"`
+	Delta          string                   `json:"delta,omitempty"`
+	Text           string                   `json:"text,omitempty"`
+	Arguments      string                   `json:"arguments,omitempty"`
+	Name           string                   `json:"name,omitempty"`
+	Item           *ResponsesOutput         `json:"item,omitempty"`
+	SequenceNumber *int                     `json:"sequence_number,omitempty"`
 	// - response.function_call_arguments.delta
 	// - response.function_call_arguments.done
-	OutputIndex  *int                           `json:"output_index,omitempty"`
-	ContentIndex *int                           `json:"content_index,omitempty"`
-	SummaryIndex *int                           `json:"summary_index,omitempty"`
-	ItemID       string                         `json:"item_id,omitempty"`
-	Part         *ResponsesReasoningSummaryPart `json:"part,omitempty"`
+	OutputIndex  *int                 `json:"output_index,omitempty"`
+	ContentIndex *int                 `json:"content_index,omitempty"`
+	SummaryIndex *int                 `json:"summary_index,omitempty"`
+	ItemID       string               `json:"item_id,omitempty"`
+	Part         *ResponsesStreamPart `json:"part,omitempty"`
 }
 
 // GetOpenAIError 从动态错误类型中提取OpenAIError结构

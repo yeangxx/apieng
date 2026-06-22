@@ -24,7 +24,7 @@ func setupFusionModelTestDB(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	DB = db
-	require.NoError(t, DB.AutoMigrate(&FusionAPIKey{}, &FusionConfig{}))
+	require.NoError(t, DB.AutoMigrate(&FusionUpstreamTemplate{}, &FusionAPIKey{}, &FusionConfig{}))
 
 	common.CryptoSecret = "test-secret-with-enough-entropy"
 	common.PersistentCryptoSecretConfigured = true
@@ -87,6 +87,20 @@ func TestFusionAPIKeyStoresNormalizedBaseURL(t *testing.T) {
 	got, err := GetFusionAPIKeyByUserAndId(1, key.Id)
 	require.NoError(t, err)
 	assert.Equal(t, "https://example.com/v1", got.BaseURL)
+}
+
+func TestFusionUpstreamConfigRejectsSensitiveOverrides(t *testing.T) {
+	_, err := ParseFusionUpstreamConfigJSON(`{"headers":{"Authorization":"Bearer bad"}}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "headers")
+
+	_, err = ParseFusionUpstreamConfigJSON(`{"query":{"api_key":"bad"}}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "query")
+
+	_, err = ParseFusionUpstreamConfigJSON(`{"body_overrides":{"model":"gpt-4o"}}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "body_overrides")
 }
 
 func TestFusionConfigValidationRejectsForeignKeys(t *testing.T) {

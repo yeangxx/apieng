@@ -19,9 +19,11 @@ type FusionAPIKey struct {
 	UserId           int            `json:"user_id" gorm:"index;index:idx_fusion_key_user_status;index:idx_fusion_key_user_fingerprint"`
 	Name             string         `json:"name" gorm:"type:varchar(80);index"`
 	Provider         string         `json:"provider" gorm:"type:varchar(32)"`
+	TemplateID       int            `json:"template_id" gorm:"index"`
 	BaseURL          string         `json:"base_url" gorm:"type:varchar(255)"`
 	DefaultModel     string         `json:"default_model" gorm:"type:varchar(128)"`
 	Models           string         `json:"models" gorm:"type:text"`
+	UpstreamConfig   string         `json:"upstream_config" gorm:"type:text"`
 	APIKeyCiphertext string         `json:"-" gorm:"type:text;column:api_key_ciphertext"`
 	APIKeyHint       string         `json:"api_key_hint" gorm:"type:varchar(32)"`
 	KeyFingerprint   string         `json:"-" gorm:"type:varchar(128);index:idx_fusion_key_user_fingerprint"`
@@ -41,6 +43,10 @@ func (key *FusionAPIKey) Normalize() {
 	}
 	key.BaseURL = strings.TrimSpace(key.BaseURL)
 	key.DefaultModel = strings.TrimSpace(key.DefaultModel)
+	key.UpstreamConfig = strings.TrimSpace(key.UpstreamConfig)
+	if key.UpstreamConfig == "" {
+		key.UpstreamConfig = "{}"
+	}
 	if key.Status == 0 {
 		key.Status = FusionKeyStatusEnabled
 	}
@@ -112,6 +118,19 @@ func (key *FusionAPIKey) IsModelAllowed(modelName string) (bool, error) {
 	return false, nil
 }
 
+func (key *FusionAPIKey) SetUpstreamConfig(config string) error {
+	normalized, err := NormalizeFusionUpstreamConfigJSON(config)
+	if err != nil {
+		return err
+	}
+	key.UpstreamConfig = normalized
+	return nil
+}
+
+func (key *FusionAPIKey) GetUpstreamConfig() (FusionUpstreamConfig, error) {
+	return ParseFusionUpstreamConfigJSON(key.UpstreamConfig)
+}
+
 func GetFusionAPIKeysByUserId(userId int) ([]*FusionAPIKey, error) {
 	var keys []*FusionAPIKey
 	err := DB.Where("user_id = ?", userId).Order("id desc").Find(&keys).Error
@@ -160,9 +179,11 @@ func (key *FusionAPIKey) Update() error {
 		Select(
 			"name",
 			"provider",
+			"template_id",
 			"base_url",
 			"default_model",
 			"models",
+			"upstream_config",
 			"api_key_ciphertext",
 			"api_key_hint",
 			"key_fingerprint",

@@ -16,14 +16,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useEffect, useMemo } from 'react'
-import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { GitBranch, SlidersHorizontal, WandSparkles } from 'lucide-react'
+import { useEffect, useMemo } from 'react'
+import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
+
+import {
+  SideDrawerSection,
+  SideDrawerSectionHeader,
+  sideDrawerContentClassName,
+  sideDrawerFooterClassName,
+  sideDrawerFormClassName,
+  sideDrawerHeaderClassName,
+  sideDrawerSwitchItemClassName,
+} from '@/components/drawer-layout'
+import { StatusBadge, StatusBadgeList } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import {
   Form,
   FormControl,
@@ -34,7 +44,6 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import {
   Sheet,
   SheetClose,
@@ -46,25 +55,23 @@ import {
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import {
-  SideDrawerSection,
-  SideDrawerSectionHeader,
-  sideDrawerContentClassName,
-  sideDrawerFooterClassName,
-  sideDrawerFormClassName,
-  sideDrawerHeaderClassName,
-  sideDrawerSwitchItemClassName,
-} from '@/components/drawer-layout'
-import { StatusBadge } from '@/components/status-badge'
+
 import { FUSION_STRATEGY_SYNTHESIZE } from '../constants'
 import {
   getFusionConfigFormSchema,
   type FusionAPIKey,
+  type FusionCandidateConfig,
   type FusionConfig,
   type FusionConfigFormInput,
   type FusionConfigFormValues,
   type FusionConfigPayload,
 } from '../types'
+import {
+  FusionCandidateModelPicker,
+  FusionJudgeModelPicker,
+  type FusionModelGroup,
+  type FusionModelOption,
+} from './fusion-model-picker'
 
 type FusionConfigDrawerProps = {
   open: boolean
@@ -75,69 +82,121 @@ type FusionConfigDrawerProps = {
   onSubmit: (payload: FusionConfigPayload) => Promise<boolean>
 }
 
-function buildCandidateModelsText(config?: FusionConfig): string {
-  if (!config) return ''
-  return Object.entries(config.candidate_models)
-    .map(([keyId, model]) => `${keyId}=${model}`)
-    .join('\n')
+function modelOptionValue(keyId: number, model: string) {
+  return `${keyId}:${model}`
+}
+
+function candidateIdentity(candidate: FusionCandidateConfig) {
+  return modelOptionValue(candidate.key_id, candidate.model)
+}
+
+function keyModelNames(key: FusionAPIKey) {
+  const seen = new Set<string>()
+  const models: string[] = []
+  const addModel = (model: string) => {
+    const normalized = model.trim()
+    if (!normalized || seen.has(normalized)) return
+    seen.add(normalized)
+    models.push(normalized)
+  }
+
+  addModel(key.default_model)
+  const allowedModels = key.models ?? []
+  allowedModels.forEach(addModel)
+  return models
+}
+
+function buildModelGroups(keys: FusionAPIKey[]): FusionModelGroup[] {
+  return keys
+    .map((key) => {
+      const options = keyModelNames(key).map((model) => ({
+        keyId: key.id,
+        keyName: key.name,
+        provider: key.provider,
+        baseUrl: key.base_url,
+        model,
+        value: modelOptionValue(key.id, model),
+        label: `${key.name} / ${model}`,
+        searchText: [key.name, key.provider, key.base_url, model]
+          .join(' ')
+          .toLowerCase(),
+      }))
+
+      return {
+        keyId: key.id,
+        keyName: key.name,
+        provider: key.provider,
+        baseUrl: key.base_url,
+        options,
+      }
+    })
+    .filter((group) => group.options.length > 0)
+}
+
+function flattenModelGroups(groups: FusionModelGroup[]): FusionModelOption[] {
+  return groups.flatMap((group) => group.options)
+}
+
+function buildModelOptions(keys: FusionAPIKey[]) {
+  return flattenModelGroups(buildModelGroups(keys))
+}
+
+function legacyCandidates(config: FusionConfig): FusionCandidateConfig[] {
+  return (config.candidate_key_ids ?? [])
+    .map((keyId) => ({
+      key_id: keyId,
+      model: (config.candidate_models ?? {})[String(keyId)] ?? '',
+    }))
+    .filter((candidate) => candidate.key_id > 0)
+}
+
+function buildCandidateDefaults(
+  keys: FusionAPIKey[],
+  config?: FusionConfig
+): FusionCandidateConfig[] {
+  if (config) {
+    const configCandidates = config.candidates ?? []
+    const source =
+      configCandidates.length > 0 ? configCandidates : legacyCandidates(config)
+    return source
+      .map((candidate) => {
+        const key = keys.find((item) => item.id === candidate.key_id)
+        return {
+          key_id: candidate.key_id,
+          model: candidate.model || key?.default_model || '',
+        }
+      })
+      .filter((candidate) => candidate.key_id > 0 && candidate.model)
+  }
+
+  return buildModelOptions(keys)
+    .slice(0, 2)
+    .map((option) => ({
+      key_id: option.keyId,
+      model: option.model,
+    }))
 }
 
 function buildDefaults(
   keys: FusionAPIKey[],
   config?: FusionConfig
 ): FusionConfigFormInput {
-  const firstKey = keys[0]
-  const secondKey = keys[1]
-  const candidateDefaults = [firstKey?.id, secondKey?.id].filter(
-    (id): id is number => typeof id === 'number'
-  )
+  const modelOptions = buildModelOptions(keys)
+  const firstOption = modelOptions[0]
 
   return {
     name: config?.name ?? '',
     model_alias: config?.model_alias ?? 'fusion:research',
     enabled: config?.enabled ?? true,
-    candidate_key_ids: config?.candidate_key_ids ?? candidateDefaults,
-    candidate_models_text: buildCandidateModelsText(config),
-    judge_key_id: config?.judge_key_id ?? firstKey?.id ?? 0,
-    judge_model: config?.judge_model ?? firstKey?.default_model ?? '',
+    candidates: buildCandidateDefaults(keys, config),
+    judge_key_id: config?.judge_key_id ?? firstOption?.keyId ?? 0,
+    judge_model: config?.judge_model ?? firstOption?.model ?? '',
     strategy: FUSION_STRATEGY_SYNTHESIZE,
     timeout_ms: config?.timeout_ms ?? 45000,
     max_parallel: config?.max_parallel ?? 4,
     min_successes: config?.min_successes ?? 1,
     judge_prompt: config?.judge_prompt ?? '',
   }
-}
-
-function parseCandidateModelsText(
-  value: string,
-  candidateIDs: number[]
-): { models: Record<string, string>; error?: string } {
-  const candidateSet = new Set(candidateIDs.map(String))
-  const models: Record<string, string> = {}
-
-  for (const rawLine of value.split('\n')) {
-    const line = rawLine.trim()
-    if (!line) continue
-    const separator = line.includes('=') ? '=' : ':'
-    const parts = line.split(separator)
-    if (parts.length < 2) {
-      return { models, error: 'Use key_id=model format for overrides' }
-    }
-    const keyId = parts.shift()?.trim() ?? ''
-    const model = parts.join(separator).trim()
-    if (!candidateSet.has(keyId)) {
-      return {
-        models,
-        error: 'Candidate model overrides must reference selected keys',
-      }
-    }
-    if (!model) {
-      return { models, error: 'Candidate model override cannot be empty' }
-    }
-    models[keyId] = model
-  }
-
-  return { models }
 }
 
 export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
@@ -148,6 +207,18 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
     () => props.keys.filter((key) => key.status === 1),
     [props.keys]
   )
+  const modelGroups = useMemo(
+    () => buildModelGroups(enabledKeys),
+    [enabledKeys]
+  )
+  const modelOptions = useMemo(() => flattenModelGroups(modelGroups), [
+    modelGroups,
+  ])
+  const modelOptionByValue = useMemo(() => {
+    const result = new Map<string, FusionModelOption>()
+    modelOptions.forEach((option) => result.set(option.value, option))
+    return result
+  }, [modelOptions])
 
   const form = useForm<FusionConfigFormInput, unknown, FusionConfigFormValues>({
     resolver: zodResolver(schema),
@@ -159,25 +230,37 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
     form.reset(buildDefaults(enabledKeys, props.currentConfig))
   }, [enabledKeys, form, props.currentConfig, props.open])
 
-  const selectedCandidateIDs = form.watch('candidate_key_ids')
-  const judgeKeyID = form.watch('judge_key_id')
+  const selectedCandidates = form.watch('candidates') ?? []
+  const watchedJudgeKeyID = form.watch('judge_key_id')
+  const judgeKeyID =
+    typeof watchedJudgeKeyID === 'number' ? watchedJudgeKeyID : 0
+  const judgeModel = form.watch('judge_model')
+  const judgeValue =
+    judgeKeyID > 0 && judgeModel ? modelOptionValue(judgeKeyID, judgeModel) : ''
+  const judgeLabel =
+    modelOptionByValue.get(judgeValue)?.label ??
+    (judgeKeyID > 0 && judgeModel ? `#${judgeKeyID} / ${judgeModel}` : '-')
 
   const onSubmit = async (values: FusionConfigFormValues) => {
-    const parsed = parseCandidateModelsText(
-      values.candidate_models_text,
-      values.candidate_key_ids
+    const candidates = values.candidates.map((candidate) => ({
+      key_id: candidate.key_id,
+      model: candidate.model.trim(),
+    }))
+    const candidateModels = candidates.reduce<Record<string, string>>(
+      (result, candidate) => {
+        result[String(candidate.key_id)] = candidate.model
+        return result
+      },
+      {}
     )
-    if (parsed.error) {
-      form.setError('candidate_models_text', { message: t(parsed.error) })
-      return
-    }
 
     const payload: FusionConfigPayload = {
       name: values.name.trim(),
       model_alias: values.model_alias.trim(),
       enabled: values.enabled,
-      candidate_key_ids: values.candidate_key_ids,
-      candidate_models: parsed.models,
+      candidates,
+      candidate_key_ids: candidates.map((candidate) => candidate.key_id),
+      candidate_models: candidateModels,
       judge_key_id: values.judge_key_id,
       judge_model: values.judge_model.trim(),
       strategy: values.strategy,
@@ -201,7 +284,9 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
             {isUpdate ? t('Edit Fusion Config') : t('Create Fusion Config')}
           </SheetTitle>
           <SheetDescription>
-            {t('Route one Fusion model alias through candidate models and a Judge model.')}
+            {t(
+              'Route one Fusion model alias through candidate models and a Judge model.'
+            )}
           </SheetDescription>
         </SheetHeader>
         <Form {...form}>
@@ -213,7 +298,7 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
               <SideDrawerSectionHeader
                 title={t('Alias')}
                 description={t(
-                  'Clients call this saved alias through /v1/fusion/chat/completions.'
+                  'Clients call this saved alias through /v1/chat/completions.'
                 )}
                 icon={<GitBranch className='size-4' />}
               />
@@ -225,7 +310,9 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
                     <div className='space-y-1'>
                       <FormLabel>{t('Enable Config')}</FormLabel>
                       <FormDescription>
-                        {t('Disabled configs cannot be used by Fusion relay requests.')}
+                        {t(
+                          'Disabled configs cannot be used by Fusion relay requests.'
+                        )}
                       </FormDescription>
                     </div>
                     <FormControl>
@@ -269,70 +356,86 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
 
             <SideDrawerSection>
               <SideDrawerSectionHeader
-                title={t('Candidates')}
-                description={t('Candidate keys run in parallel before Judge synthesis.')}
+                title={t('Candidate Models')}
+                description={t(
+                  'Select candidate models from all enabled Fusion keys.'
+                )}
                 icon={<WandSparkles className='size-4' />}
               />
               <FormField
                 control={form.control}
-                name='candidate_key_ids'
+                name='candidates'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>{t('Candidate Keys')}</FormLabel>
-                    <div className='grid gap-2 sm:grid-cols-2'>
-                      {enabledKeys.map((key) => {
-                        const checked = field.value.includes(key.id)
-                        return (
-                          <label
-                            key={key.id}
-                            className='border-border/70 hover:bg-muted/40 flex min-w-0 cursor-pointer items-start gap-2 rounded-lg border px-3 py-2'
-                          >
-                            <Checkbox
-                              checked={checked}
-                              onCheckedChange={(value) => {
-                                const next = value
-                                  ? [...field.value, key.id]
-                                  : field.value.filter((id) => id !== key.id)
-                                field.onChange(next)
-                              }}
-                            />
-                            <span className='min-w-0 flex-1'>
-                              <span className='block truncate text-sm font-medium'>
-                                {key.name}
-                              </span>
-                              <span className='text-muted-foreground block truncate font-mono text-xs'>
-                                {key.default_model}
-                              </span>
-                            </span>
-                          </label>
-                        )
-                      })}
-                    </div>
-                    {enabledKeys.length === 0 && (
+                    <FormLabel>{t('Candidate Models')}</FormLabel>
+                    <FormDescription>
+                      {t(
+                        'Select candidate models from all enabled Fusion keys.'
+                      )}
+                    </FormDescription>
+                    {modelOptions.length === 0 && (
                       <div className='text-muted-foreground rounded-lg border p-3 text-sm'>
-                        {t('Create an enabled Fusion key before adding a config.')}
+                        {t('No models available for enabled Fusion keys')}
                       </div>
                     )}
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='candidate_models_text'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Candidate Model Overrides')}</FormLabel>
-                    <FormControl>
-                      <Textarea
-                        {...field}
-                        className='min-h-24 font-mono text-xs'
-                        placeholder={'12=gpt-4o-mini\n15=claude-3-5-sonnet'}
+                    {modelOptions.length > 0 && (
+                      <FormControl>
+                        <FusionCandidateModelPicker
+                          groups={modelGroups}
+                          selectedValues={(field.value ?? []).map(
+                            candidateIdentity
+                          )}
+                          onToggle={(option) => {
+                            const current = field.value ?? []
+                            const alreadySelected = current.some(
+                              (candidate) =>
+                                candidateIdentity(candidate) === option.value
+                            )
+                            if (alreadySelected) {
+                              field.onChange(
+                                current.filter(
+                                  (candidate) =>
+                                    candidateIdentity(candidate) !==
+                                    option.value
+                                )
+                              )
+                              return
+                            }
+                            field.onChange([
+                              ...current,
+                              {
+                                key_id: option.keyId,
+                                model: option.model,
+                              },
+                            ])
+                          }}
+                          onClear={() => field.onChange([])}
+                        />
+                      </FormControl>
+                    )}
+                    {selectedCandidates.length > 0 && (
+                      <StatusBadgeList
+                        items={selectedCandidates}
+                        max={4}
+                        getKey={(candidate, index) =>
+                          `${candidateIdentity(candidate)}-${index}`
+                        }
+                        renderItem={(candidate) => {
+                          const value = candidateIdentity(candidate)
+                          const label =
+                            modelOptionByValue.get(value)?.label ??
+                            `#${candidate.key_id} / ${candidate.model}`
+                          return (
+                            <StatusBadge
+                              label={label}
+                              variant='info'
+                              copyable={false}
+                              className='max-w-52'
+                            />
+                          )
+                        }}
                       />
-                    </FormControl>
-                    <FormDescription>
-                      {t('Optional. One key_id=model override per line.')}
-                    </FormDescription>
+                    )}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -347,57 +450,45 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
                 )}
                 icon={<SlidersHorizontal className='size-4' />}
               />
-              <div className='grid gap-4 sm:grid-cols-2'>
-                <FormField
-                  control={form.control}
-                  name='judge_key_id'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Judge Key')}</FormLabel>
-                      <FormControl>
-                        <NativeSelect
-                          value={String(field.value)}
-                          onChange={(event) =>
-                            field.onChange(Number(event.target.value))
+              <FormField
+                control={form.control}
+                name='judge_model'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Judge Model')}</FormLabel>
+                    <FormControl>
+                      <FusionJudgeModelPicker
+                        groups={modelGroups}
+                        value={judgeValue}
+                        onValueChange={(option) => {
+                          if (!option) {
+                            form.setValue('judge_key_id', 0, {
+                              shouldDirty: true,
+                              shouldValidate: true,
+                            })
+                            field.onChange('')
+                            return
                           }
-                          className='w-full'
-                        >
-                          <NativeSelectOption value='0'>
-                            {t('Select key')}
-                          </NativeSelectOption>
-                          {enabledKeys.map((key) => (
-                            <NativeSelectOption key={key.id} value={key.id}>
-                              {key.name}
-                            </NativeSelectOption>
-                          ))}
-                        </NativeSelect>
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name='judge_model'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Judge Model')}</FormLabel>
-                      <FormControl>
-                        <Input {...field} placeholder='gpt-4o-mini' />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
+                          form.setValue('judge_key_id', option.keyId, {
+                            shouldDirty: true,
+                            shouldValidate: true,
+                          })
+                          field.onChange(option.model)
+                        }}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
               <div className='flex flex-wrap items-center gap-2'>
                 <StatusBadge
-                  label={`${t('Selected candidates')}: ${selectedCandidateIDs.length}`}
+                  label={`${t('Selected candidates')}: ${selectedCandidates.length}`}
                   variant='info'
                   copyable={false}
                 />
                 <StatusBadge
-                  label={`${t('Judge key')}: ${judgeKeyID || '-'}`}
+                  label={`${t('Judge')}: ${judgeLabel}`}
                   variant='neutral'
                   copyable={false}
                 />
@@ -412,7 +503,9 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
                       <Textarea
                         {...field}
                         className='min-h-28'
-                        placeholder={t('Optional extra instruction for the Judge.')}
+                        placeholder={t(
+                          'Optional extra instruction for the Judge.'
+                        )}
                       />
                     </FormControl>
                     <FormMessage />
@@ -424,7 +517,9 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
             <SideDrawerSection>
               <SideDrawerSectionHeader
                 title={t('Execution Limits')}
-                description={t('These values are capped by admin Fusion settings.')}
+                description={t(
+                  'These values are capped by admin Fusion settings.'
+                )}
               />
               <div className='grid gap-4 sm:grid-cols-3'>
                 <FormField

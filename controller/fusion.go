@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/fusion_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -27,6 +29,8 @@ const (
 	fusionNameMaxLength        = 80
 	fusionDefaultModelMaxBytes = 128
 )
+
+var fusionStreamPingInterval = 5 * time.Second
 
 var fusionDirectRequestFields = map[string]struct{}{
 	"api_key":           {},
@@ -126,6 +130,10 @@ func validateFusionExecutionGate(c *gin.Context) bool {
 		fusionError(c, http.StatusForbidden, errors.New("Fusion is disabled"))
 		return false
 	}
+	return validateFusionCryptoSecretGate(c)
+}
+
+func validateFusionCryptoSecretGate(c *gin.Context) bool {
 	if !common.HasPersistentCryptoSecret() {
 		fusionError(c, http.StatusServiceUnavailable, errors.New("CRYPTO_SECRET is required for Fusion"))
 		return false
@@ -185,17 +193,8 @@ func validateFusionRelayChatRequest(request *dto.GeneralOpenAIRequest) error {
 	if request.Model == "" {
 		return errors.New("model is required")
 	}
-	if request.Stream != nil && *request.Stream {
-		return errors.New("fusion does not support stream=true in v1")
-	}
 	if request.N != nil && *request.N > 1 {
 		return errors.New("fusion does not support n>1 in v1")
-	}
-	if len(request.Tools) > 0 {
-		return errors.New("fusion does not support tools in v1")
-	}
-	if request.ToolChoice != nil {
-		return errors.New("fusion does not support tool_choice in v1")
 	}
 	if len(request.Functions) > 0 {
 		return errors.New("fusion does not support functions in v1")
@@ -211,7 +210,8 @@ func validateFusionRelayChatRequest(request *dto.GeneralOpenAIRequest) error {
 
 func enforceFusionTokenModelLimit(c *gin.Context, modelName string) bool {
 	if !common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled) {
-		return true
+		fusionOpenAIError(c, http.StatusForbidden, "Fusion token group requires exactly one enabled Fusion model limit", types.ErrorCodeAccessDenied)
+		return false
 	}
 	value, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
 	if !ok {
@@ -223,8 +223,32 @@ func enforceFusionTokenModelLimit(c *gin.Context, modelName string) bool {
 		tokenModelLimit = map[string]bool{}
 	}
 	matchName := ratio_setting.FormatMatchingModelName(modelName)
-	if _, ok := tokenModelLimit[matchName]; !ok {
+	normalizedLimits := make(map[string]bool, len(tokenModelLimit))
+	for limit, allowed := range tokenModelLimit {
+		if !allowed {
+			continue
+		}
+		limit = strings.TrimSpace(limit)
+		if limit == "" {
+			continue
+		}
+		normalizedLimits[ratio_setting.FormatMatchingModelName(limit)] = true
+	}
+	if len(normalizedLimits) != 1 {
+		fusionOpenAIError(c, http.StatusForbidden, "Fusion token group requires exactly one enabled Fusion model limit", types.ErrorCodeAccessDenied)
+		return false
+	}
+	if _, ok := normalizedLimits[matchName]; !ok {
 		fusionOpenAIError(c, http.StatusForbidden, fmt.Sprintf("This token has no access to model %s", modelName), types.ErrorCodeAccessDenied)
+		return false
+	}
+	return true
+}
+
+func enforceFusionTokenGroup(c *gin.Context) bool {
+	tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
+	if !fusion_setting.IsFusionTokenGroup(tokenGroup) {
+		fusionOpenAIError(c, http.StatusForbidden, "Fusion models require a Fusion token group", types.ErrorCodeAccessDenied)
 		return false
 	}
 	return true
@@ -272,7 +296,7 @@ func estimateFusionRelayPromptTokens(request *dto.GeneralOpenAIRequest) int {
 }
 
 func buildFusionPreConsumeInput(config *model.FusionConfig, request *dto.GeneralOpenAIRequest) (service.FusionBillingInput, error) {
-	candidateIDs, err := config.GetCandidateKeyIDs()
+	candidates, err := config.GetCandidates()
 	if err != nil {
 		return service.FusionBillingInput{}, err
 	}
@@ -284,7 +308,7 @@ func buildFusionPreConsumeInput(config *model.FusionConfig, request *dto.General
 	if completionTokens <= 0 {
 		completionTokens = 1
 	}
-	candidateCount := len(candidateIDs)
+	candidateCount := len(candidates)
 	return service.FusionBillingInput{
 		CandidatePromptTokens:     promptTokens * candidateCount,
 		CandidateCompletionTokens: completionTokens * candidateCount,
@@ -308,6 +332,15 @@ func buildFusionChatCompletionResponse(modelAlias string, result *service.Fusion
 	if finishReason == "" {
 		finishReason = "stop"
 	}
+	message := dto.Message{
+		Role:    "assistant",
+		Content: result.Content,
+	}
+	if len(result.ToolCalls) > 0 {
+		message.Content = ""
+		message.SetToolCalls(result.ToolCalls)
+		finishReason = "tool_calls"
+	}
 	return dto.OpenAITextResponse{
 		Id:      "chatcmpl-fusion-" + common.GetRandomString(12),
 		Object:  "chat.completion",
@@ -315,15 +348,439 @@ func buildFusionChatCompletionResponse(modelAlias string, result *service.Fusion
 		Model:   modelAlias,
 		Choices: []dto.OpenAITextResponseChoice{
 			{
-				Index: 0,
-				Message: dto.Message{
-					Role:    "assistant",
-					Content: result.Content,
-				},
+				Index:        0,
+				Message:      message,
 				FinishReason: finishReason,
 			},
 		},
 		Usage: result.Usage,
+	}
+}
+
+func buildFusionChatCompletionStreamResponse(modelAlias string, result *service.FusionEngineResult) dto.ChatCompletionsStreamResponse {
+	finishReason := result.Judge.FinishReason
+	if finishReason == "" {
+		finishReason = "stop"
+	}
+	delta := dto.ChatCompletionsStreamResponseChoiceDelta{
+		Role:    "assistant",
+		Content: &result.Content,
+	}
+	if len(result.ToolCalls) > 0 {
+		delta.Content = nil
+		delta.ToolCalls = result.ToolCalls
+		finishReason = "tool_calls"
+		for index := range delta.ToolCalls {
+			delta.ToolCalls[index].SetIndex(index)
+		}
+	}
+	return dto.ChatCompletionsStreamResponse{
+		Id:      "chatcmpl-fusion-" + common.GetRandomString(12),
+		Object:  "chat.completion.chunk",
+		Created: common.GetTimestamp(),
+		Model:   modelAlias,
+		Choices: []dto.ChatCompletionsStreamResponseChoice{
+			{
+				Index:        0,
+				Delta:        delta,
+				FinishReason: &finishReason,
+			},
+		},
+		Usage: &result.Usage,
+	}
+}
+
+func writeFusionChatCompletionStream(c *gin.Context, modelAlias string, result *service.FusionEngineResult) {
+	helper.SetEventStreamHeaders(c)
+	chunk := buildFusionChatCompletionStreamResponse(modelAlias, result)
+	_ = helper.ObjectData(c, chunk)
+	helper.Done(c)
+}
+
+func buildFusionResponsesResponse(modelAlias string, result *service.FusionEngineResult) dto.OpenAIResponsesResponse {
+	status, _ := common.Marshal("completed")
+	output := []dto.ResponsesOutput{
+		{
+			Type:   "message",
+			ID:     "msg_fusion_" + common.GetRandomString(12),
+			Status: "completed",
+			Role:   "assistant",
+			Content: []dto.ResponsesOutputContent{
+				{
+					Type:        "output_text",
+					Text:        result.Content,
+					Annotations: []interface{}{},
+				},
+			},
+		},
+	}
+	if len(result.ToolCalls) > 0 {
+		output = fusionResponsesToolCallOutputs(result.ToolCalls)
+	}
+	return dto.OpenAIResponsesResponse{
+		ID:                "resp_fusion_" + common.GetRandomString(12),
+		Object:            "response",
+		CreatedAt:         int(common.GetTimestamp()),
+		Status:            status,
+		Model:             modelAlias,
+		Output:            output,
+		ParallelToolCalls: true,
+		Store:             false,
+		Usage: &dto.Usage{
+			InputTokens:        result.Usage.PromptTokens,
+			OutputTokens:       result.Usage.CompletionTokens,
+			TotalTokens:        result.Usage.TotalTokens,
+			InputTokensDetails: &result.Usage.PromptTokensDetails,
+		},
+	}
+}
+
+func fusionResponsesToolCallOutputs(toolCalls []dto.ToolCallResponse) []dto.ResponsesOutput {
+	output := make([]dto.ResponsesOutput, 0, len(toolCalls))
+	for _, toolCall := range toolCalls {
+		if strings.TrimSpace(toolCall.ID) == "" || strings.TrimSpace(toolCall.Function.Name) == "" {
+			continue
+		}
+		arguments, _ := common.Marshal(toolCall.Function.Arguments)
+		output = append(output, dto.ResponsesOutput{
+			Type:      "function_call",
+			ID:        toolCall.ID,
+			Status:    "completed",
+			CallId:    toolCall.ID,
+			Name:      toolCall.Function.Name,
+			Arguments: arguments,
+		})
+	}
+	return output
+}
+
+func writeFusionResponsesStream(c *gin.Context, modelAlias string, result *service.FusionEngineResult) {
+	helper.SetEventStreamHeaders(c)
+	sequenceNumber := 0
+	writeEvent := func(eventType string, event dto.ResponsesStreamResponse) {
+		sequenceNumber++
+		event.SequenceNumber = &sequenceNumber
+		writeFusionResponsesStreamEvent(c, eventType, event)
+	}
+	response := buildFusionResponsesResponse(modelAlias, result)
+	writeEvent("response.created", dto.ResponsesStreamResponse{Response: &response})
+	writeEvent("response.in_progress", dto.ResponsesStreamResponse{Response: &response})
+	if len(result.ToolCalls) > 0 {
+		for index := range response.Output {
+			outputIndex := index
+			item := response.Output[index]
+			writeEvent(dto.ResponsesOutputTypeItemAdded, dto.ResponsesStreamResponse{
+				Item:        &item,
+				OutputIndex: &outputIndex,
+			})
+			if arguments := item.ArgumentsString(); arguments != "" {
+				writeEvent("response.function_call_arguments.delta", dto.ResponsesStreamResponse{
+					Delta:       arguments,
+					OutputIndex: &outputIndex,
+					ItemID:      item.ID,
+				})
+			}
+			writeEvent("response.function_call_arguments.done", dto.ResponsesStreamResponse{
+				Arguments:   item.ArgumentsString(),
+				OutputIndex: &outputIndex,
+				ItemID:      item.ID,
+			})
+			writeEvent(dto.ResponsesOutputTypeItemDone, dto.ResponsesStreamResponse{
+				Item:        &item,
+				OutputIndex: &outputIndex,
+			})
+		}
+		writeEvent("response.completed", dto.ResponsesStreamResponse{Response: &response})
+		return
+	}
+	outputIndex := 0
+	contentIndex := 0
+	if len(response.Output) == 0 {
+		writeEvent("response.completed", dto.ResponsesStreamResponse{Response: &response})
+		return
+	}
+	item := response.Output[0]
+	part := dto.ResponsesStreamPart{
+		Type:        "output_text",
+		Text:        result.Content,
+		Annotations: []interface{}{},
+	}
+	writeEvent(dto.ResponsesOutputTypeItemAdded, dto.ResponsesStreamResponse{
+		Item:        &item,
+		OutputIndex: &outputIndex,
+	})
+	writeEvent("response.content_part.added", dto.ResponsesStreamResponse{
+		OutputIndex:  &outputIndex,
+		ContentIndex: &contentIndex,
+		ItemID:       item.ID,
+		Part:         &part,
+	})
+	writeEvent("response.output_text.delta", dto.ResponsesStreamResponse{
+		Delta:        result.Content,
+		OutputIndex:  &outputIndex,
+		ContentIndex: &contentIndex,
+		ItemID:       item.ID,
+	})
+	writeEvent("response.output_text.done", dto.ResponsesStreamResponse{
+		Text:         result.Content,
+		OutputIndex:  &outputIndex,
+		ContentIndex: &contentIndex,
+		ItemID:       item.ID,
+	})
+	writeEvent("response.content_part.done", dto.ResponsesStreamResponse{
+		OutputIndex:  &outputIndex,
+		ContentIndex: &contentIndex,
+		ItemID:       item.ID,
+		Part:         &part,
+	})
+	writeEvent(dto.ResponsesOutputTypeItemDone, dto.ResponsesStreamResponse{
+		Item:        &item,
+		OutputIndex: &outputIndex,
+	})
+	writeEvent("response.completed", dto.ResponsesStreamResponse{Response: &response})
+}
+
+func writeFusionResponsesStreamEvent(c *gin.Context, eventType string, event dto.ResponsesStreamResponse) {
+	event.Type = eventType
+	if data, err := common.Marshal(event); err == nil {
+		helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: eventType}, string(data))
+	}
+}
+
+type fusionRelayExecution struct {
+	RelayInfo        *relaycommon.RelayInfo
+	Result           *service.FusionEngineResult
+	PreConsumedQuota int
+	ActualQuota      int
+	Policy           service.FusionBillingPolicy
+	IsStream         bool
+}
+
+type fusionRelayPreparedExecution struct {
+	RelayInfo        *relaycommon.RelayInfo
+	Config           *model.FusionConfig
+	Request          dto.GeneralOpenAIRequest
+	PreConsumedQuota int
+	Policy           service.FusionBillingPolicy
+	IsStream         bool
+}
+
+func prepareFusionRelay(c *gin.Context, request *dto.GeneralOpenAIRequest) (*fusionRelayPreparedExecution, bool) {
+	if !enforceFusionTokenGroup(c) {
+		return nil, false
+	}
+	if !enforceFusionTokenModelLimit(c, request.Model) {
+		return nil, false
+	}
+
+	config, err := model.GetFusionConfigByUserAndAlias(c.GetInt("id"), request.Model)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			fusionOpenAIError(c, http.StatusNotFound, fmt.Sprintf("fusion model %s not found", request.Model), types.ErrorCodeModelNotFound)
+			return nil, false
+		}
+		fusionOpenAIError(c, http.StatusInternalServerError, err.Error(), types.ErrorCodeQueryDataError)
+		return nil, false
+	}
+	if !config.Enabled {
+		fusionOpenAIError(c, http.StatusForbidden, "fusion config is disabled", types.ErrorCodeAccessDenied)
+		return nil, false
+	}
+
+	relayInfo, err := buildFusionRelayInfo(c, request)
+	if err != nil {
+		fusionOpenAIError(c, http.StatusInternalServerError, err.Error(), types.ErrorCodeGenRelayInfoFailed)
+		return nil, false
+	}
+	groupRatioInfo := fusionGroupRatioInfo(c)
+	relayInfo.PriceData = types.PriceData{
+		GroupRatioInfo: groupRatioInfo,
+	}
+	policy := fusionBillingPolicyFromContext(c)
+	preConsumeInput, err := buildFusionPreConsumeInput(config, request)
+	if err != nil {
+		fusionOpenAIError(c, http.StatusBadRequest, err.Error(), types.ErrorCodeInvalidRequest)
+		return nil, false
+	}
+	preConsumedQuota, err := service.CalculateFusionServiceQuota(preConsumeInput, policy)
+	if err != nil {
+		fusionOpenAIError(c, http.StatusServiceUnavailable, err.Error(), types.ErrorCodeModelPriceError)
+		return nil, false
+	}
+	relayInfo.PriceData.QuotaToPreConsume = preConsumedQuota
+	if newAPIError := service.PreConsumeBilling(c, preConsumedQuota, relayInfo); newAPIError != nil {
+		fusionNewAPIError(c, newAPIError)
+		return nil, false
+	}
+
+	executionRequest := *request
+	executionRequest.Stream = common.GetPointer(false)
+	return &fusionRelayPreparedExecution{
+		RelayInfo:        relayInfo,
+		Config:           config,
+		Request:          executionRequest,
+		PreConsumedQuota: preConsumedQuota,
+		Policy:           policy,
+		IsStream:         request.Stream != nil && *request.Stream,
+	}, true
+}
+
+func executePreparedFusionRelay(c *gin.Context, prepared *fusionRelayPreparedExecution) (*fusionRelayExecution, error) {
+	if prepared == nil {
+		return nil, errors.New("fusion execution is not prepared")
+	}
+	relayInfo := prepared.RelayInfo
+	result, err := service.RunFusionEngine(c.Request.Context(), service.FusionEngineRequest{
+		UserID:    relayInfo.UserId,
+		TokenID:   relayInfo.TokenId,
+		TokenName: c.GetString("token_name"),
+		Config:    prepared.Config,
+		Request:   &prepared.Request,
+	})
+	if err != nil {
+		if relayInfo.Billing != nil {
+			relayInfo.Billing.Refund(c)
+		}
+		return nil, fusionExecutionNewAPIError(err)
+	}
+
+	actualQuota, err := service.CalculateFusionServiceQuota(service.BuildFusionBillingInput(result), prepared.Policy)
+	if err != nil {
+		if relayInfo.Billing != nil {
+			relayInfo.Billing.Refund(c)
+		}
+		return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeModelPriceError, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
+	}
+	relayInfo.SetFirstResponseTime()
+	model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, actualQuota)
+	if err := service.SettleBilling(c, relayInfo, actualQuota); err != nil {
+		common.SysError("error settling fusion billing: " + err.Error())
+	}
+	recordFusionConsumeLog(c, relayInfo, result, prepared.PreConsumedQuota, actualQuota, prepared.Policy, prepared.IsStream)
+	return &fusionRelayExecution{
+		RelayInfo:        relayInfo,
+		Result:           result,
+		PreConsumedQuota: prepared.PreConsumedQuota,
+		ActualQuota:      actualQuota,
+		Policy:           prepared.Policy,
+		IsStream:         prepared.IsStream,
+	}, nil
+}
+
+func runFusionRelay(c *gin.Context, request *dto.GeneralOpenAIRequest) (*fusionRelayExecution, bool) {
+	prepared, ok := prepareFusionRelay(c, request)
+	if !ok {
+		return nil, false
+	}
+	execution, err := executePreparedFusionRelay(c, prepared)
+	if err != nil {
+		if newAPIError, ok := err.(*types.NewAPIError); ok {
+			fusionNewAPIError(c, newAPIError)
+		} else {
+			fusionNewAPIError(c, fusionExecutionNewAPIError(err))
+		}
+		return nil, false
+	}
+	return execution, true
+}
+
+func fusionExecutionNewAPIError(err error) *types.NewAPIError {
+	code := types.ErrorCodeBadResponse
+	status := http.StatusBadGateway
+	if isFusionExecutionTimeoutError(err) {
+		code = types.ErrorCodeChannelResponseTimeExceeded
+		status = http.StatusGatewayTimeout
+	}
+	return types.NewErrorWithStatusCode(err, code, status, types.ErrOptionWithSkipRetry())
+}
+
+func isFusionExecutionTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "upstream request timeout")
+}
+
+type fusionStreamExecutionResult struct {
+	execution *fusionRelayExecution
+	err       *types.NewAPIError
+}
+
+func fusionStreamOpenAIError(c *gin.Context, err *types.NewAPIError) types.OpenAIError {
+	if err == nil {
+		return types.OpenAIError{
+			Message: common.MessageWithRequestId("fusion request failed", fusionRequestID(c)),
+			Type:    "new_api_error",
+			Code:    types.ErrorCodeBadResponse,
+		}
+	}
+	openAIError := err.ToOpenAIError()
+	openAIError.Message = common.MessageWithRequestId(openAIError.Message, fusionRequestID(c))
+	return openAIError
+}
+
+func writeFusionChatCompletionStreamError(c *gin.Context, err *types.NewAPIError) {
+	_ = helper.ObjectData(c, gin.H{"error": fusionStreamOpenAIError(c, err)})
+	helper.Done(c)
+}
+
+func writeFusionResponsesStreamError(c *gin.Context, err *types.NewAPIError) {
+	data, marshalErr := common.Marshal(gin.H{
+		"type":  "error",
+		"error": fusionStreamOpenAIError(c, err),
+	})
+	if marshalErr != nil {
+		return
+	}
+	helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: "error"}, string(data))
+}
+
+func waitFusionStreamExecution(c *gin.Context, prepared *fusionRelayPreparedExecution, writeError func(*gin.Context, *types.NewAPIError)) (*fusionRelayExecution, bool) {
+	resultChan := make(chan fusionStreamExecutionResult, 1)
+	executionCtx, cancelExecution := context.WithCancel(c.Request.Context())
+	defer cancelExecution()
+	executionContext := c.Copy()
+	if executionContext.Request != nil {
+		executionContext.Request = executionContext.Request.WithContext(executionCtx)
+	}
+	go func() {
+		execution, err := executePreparedFusionRelay(executionContext, prepared)
+		result := fusionStreamExecutionResult{execution: execution}
+		if err != nil {
+			if newAPIError, ok := err.(*types.NewAPIError); ok {
+				result.err = newAPIError
+			} else {
+				result.err = fusionExecutionNewAPIError(err)
+			}
+		}
+		resultChan <- result
+	}()
+
+	if err := helper.PingData(c); err != nil {
+		cancelExecution()
+		return nil, false
+	}
+
+	ticker := time.NewTicker(fusionStreamPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case result := <-resultChan:
+			if result.err != nil {
+				writeError(c, result.err)
+				return nil, false
+			}
+			return result.execution, true
+		case <-ticker.C:
+			if err := helper.PingData(c); err != nil {
+				cancelExecution()
+				return nil, false
+			}
+		case <-c.Request.Context().Done():
+			cancelExecution()
+			return nil, false
+		}
 	}
 }
 
@@ -395,10 +852,24 @@ func buildFusionLogOther(relayInfo *relaycommon.RelayInfo, result *service.Fusio
 	other["judge_completion_tokens"] = input.JudgeCompletionTokens
 	other["failed_candidates"] = input.FailedCandidates
 	other["failed_prompt_tokens"] = input.FailedPromptTokens
+	if billingResult, err := service.RunFusionBillingExpr(policy.Expression, input, policy); err == nil {
+		other["billing"] = map[string]interface{}{
+			"mode":                     fusion_setting.GetFusionBillingMode(),
+			"expr":                     policy.Expression,
+			"minimum_quota":            policy.MinimumQuota,
+			"charge_failed_candidates": policy.ChargeFailedCandidates,
+			"failed_candidate_quota":   policy.FailedCandidateQuota,
+			"group_ratio":              policy.GroupRatio,
+			"quota_before_group":       billingResult.QuotaBeforeGroup,
+			"quota_after_group":        billingResult.QuotaAfterGroup,
+			"final_quota":              actualQuota,
+			"matched_vars":             billingResult.MatchedVars,
+		}
+	}
 	return other
 }
 
-func recordFusionConsumeLog(c *gin.Context, relayInfo *relaycommon.RelayInfo, result *service.FusionEngineResult, preConsumedQuota int, actualQuota int, policy service.FusionBillingPolicy) {
+func recordFusionConsumeLog(c *gin.Context, relayInfo *relaycommon.RelayInfo, result *service.FusionEngineResult, preConsumedQuota int, actualQuota int, policy service.FusionBillingPolicy, isStream bool) {
 	useTimeSeconds := int(time.Since(relayInfo.StartTime).Seconds())
 	model.RecordConsumeLog(c, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        0,
@@ -410,7 +881,7 @@ func recordFusionConsumeLog(c *gin.Context, relayInfo *relaycommon.RelayInfo, re
 		Content:          fmt.Sprintf("Fusion synthesis, candidates %d, judge model %s", len(result.Candidates), result.Judge.Model),
 		TokenId:          relayInfo.TokenId,
 		UseTimeSeconds:   useTimeSeconds,
-		IsStream:         false,
+		IsStream:         isStream,
 		Group:            relayInfo.UsingGroup,
 		Other:            buildFusionLogOther(relayInfo, result, preConsumedQuota, actualQuota, policy),
 	})
@@ -443,80 +914,480 @@ func FusionChatCompletions(c *gin.Context) {
 		fusionOpenAIError(c, http.StatusBadRequest, err.Error(), types.ErrorCodeInvalidRequest)
 		return
 	}
-	if !enforceFusionTokenModelLimit(c, request.Model) {
-		return
-	}
-
-	config, err := model.GetFusionConfigByUserAndAlias(c.GetInt("id"), request.Model)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			fusionOpenAIError(c, http.StatusNotFound, fmt.Sprintf("fusion model %s not found", request.Model), types.ErrorCodeModelNotFound)
+	if request.Stream != nil && *request.Stream {
+		prepared, ok := prepareFusionRelay(c, &request)
+		if !ok {
 			return
 		}
-		fusionOpenAIError(c, http.StatusInternalServerError, err.Error(), types.ErrorCodeQueryDataError)
+		helper.SetEventStreamHeaders(c)
+		execution, ok := waitFusionStreamExecution(c, prepared, writeFusionChatCompletionStreamError)
+		if !ok {
+			return
+		}
+		writeFusionChatCompletionStream(c, request.Model, execution.Result)
 		return
 	}
-	if !config.Enabled {
-		fusionOpenAIError(c, http.StatusForbidden, "fusion config is disabled", types.ErrorCodeAccessDenied)
+	execution, ok := runFusionRelay(c, &request)
+	if !ok {
+		return
+	}
+	c.JSON(http.StatusOK, buildFusionChatCompletionResponse(request.Model, execution.Result))
+}
+
+func fusionResponsesRequestToChatRequest(request *dto.OpenAIResponsesRequest) (*dto.GeneralOpenAIRequest, error) {
+	if strings.TrimSpace(request.Model) == "" {
+		return nil, errors.New("model is required")
+	}
+	messages := make([]dto.Message, 0)
+	if len(request.Instructions) > 0 && common.GetJsonType(request.Instructions) == "string" {
+		var instructions string
+		if err := common.Unmarshal(request.Instructions, &instructions); err == nil && strings.TrimSpace(instructions) != "" {
+			messages = append(messages, dto.Message{
+				Role:    "system",
+				Content: instructions,
+			})
+		}
+	}
+	inputMessages, err := fusionResponsesInputToChatMessages(request.Input)
+	if err != nil {
+		return nil, err
+	}
+	messages = append(messages, inputMessages...)
+	if len(messages) == 0 {
+		return nil, errors.New("input is required")
+	}
+	chatRequest := &dto.GeneralOpenAIRequest{
+		Model:         strings.TrimSpace(request.Model),
+		Messages:      messages,
+		Stream:        request.Stream,
+		StreamOptions: request.StreamOptions,
+		Temperature:   request.Temperature,
+		TopP:          request.TopP,
+		MaxTokens:     request.MaxOutputTokens,
+		User:          request.User,
+		Metadata:      request.Metadata,
+		Store:         request.Store,
+	}
+	if len(request.Tools) > 0 {
+		tools, err := fusionResponsesToolsToChatTools(request.Tools)
+		if err != nil {
+			return nil, err
+		}
+		chatRequest.Tools = tools
+	}
+	if len(request.ToolChoice) > 0 {
+		toolChoice, err := fusionResponsesToolChoiceToChatToolChoice(request.ToolChoice)
+		if err != nil {
+			return nil, err
+		}
+		chatRequest.ToolChoice = toolChoice
+	}
+	if len(request.ParallelToolCalls) > 0 && common.GetJsonType(request.ParallelToolCalls) == "boolean" {
+		var parallelToolCalls bool
+		if err := common.Unmarshal(request.ParallelToolCalls, &parallelToolCalls); err == nil {
+			chatRequest.ParallelTooCalls = &parallelToolCalls
+		}
+	}
+	return chatRequest, nil
+}
+
+func fusionResponsesInputToChatMessages(raw []byte) ([]dto.Message, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	switch common.GetJsonType(raw) {
+	case "string":
+		var text string
+		if err := common.Unmarshal(raw, &text); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(text) == "" {
+			return nil, nil
+		}
+		return []dto.Message{{Role: "user", Content: text}}, nil
+	case "object":
+		var item map[string]interface{}
+		if err := common.Unmarshal(raw, &item); err != nil {
+			return nil, err
+		}
+		return fusionResponsesInputItemToChatMessages(item)
+	case "array":
+		var items []interface{}
+		if err := common.Unmarshal(raw, &items); err != nil {
+			return nil, err
+		}
+		messages := make([]dto.Message, 0, len(items))
+		for _, rawItem := range items {
+			switch item := rawItem.(type) {
+			case string:
+				if strings.TrimSpace(item) != "" {
+					messages = append(messages, dto.Message{Role: "user", Content: item})
+				}
+			case map[string]interface{}:
+				itemMessages, err := fusionResponsesInputItemToChatMessages(item)
+				if err != nil {
+					return nil, err
+				}
+				messages = append(messages, itemMessages...)
+			default:
+				return nil, fmt.Errorf("fusion responses input array contains unsupported item %T", rawItem)
+			}
+		}
+		return messages, nil
+	default:
+		return nil, fmt.Errorf("fusion responses does not support input JSON type %s in v1", common.GetJsonType(raw))
+	}
+}
+
+func fusionResponsesInputItemToChatMessages(item map[string]interface{}) ([]dto.Message, error) {
+	itemType := strings.TrimSpace(common.Interface2String(item["type"]))
+	role := strings.TrimSpace(common.Interface2String(item["role"]))
+
+	switch itemType {
+	case "function_call":
+		callID := strings.TrimSpace(common.Interface2String(item["call_id"]))
+		if callID == "" {
+			callID = strings.TrimSpace(common.Interface2String(item["id"]))
+		}
+		name := strings.TrimSpace(common.Interface2String(item["name"]))
+		if callID == "" || name == "" {
+			return nil, errors.New("fusion responses function_call requires call_id and name")
+		}
+		toolCalls, err := common.Marshal([]dto.ToolCallRequest{
+			{
+				ID:   callID,
+				Type: "function",
+				Function: dto.FunctionRequest{
+					Name:      name,
+					Arguments: fusionResponsesStringOrJSON(item["arguments"]),
+				},
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return []dto.Message{{
+			Role:      "assistant",
+			Content:   "",
+			ToolCalls: toolCalls,
+		}}, nil
+	case "function_call_output":
+		callID := strings.TrimSpace(common.Interface2String(item["call_id"]))
+		if callID == "" {
+			callID = strings.TrimSpace(common.Interface2String(item["id"]))
+		}
+		if callID == "" {
+			return nil, errors.New("fusion responses function_call_output requires call_id")
+		}
+		return []dto.Message{{
+			Role:       "tool",
+			ToolCallId: callID,
+			Content:    fusionResponsesToolOutputString(item),
+		}}, nil
+	case "input_text", "output_text", "text":
+		text := strings.TrimSpace(common.Interface2String(item["text"]))
+		if text == "" {
+			return nil, nil
+		}
+		if role == "" {
+			role = "user"
+		}
+		return []dto.Message{{Role: role, Content: text}}, nil
+	case "input_image":
+		if role == "" {
+			role = "user"
+		}
+		imageURL := fusionResponsesImageURLString(item["image_url"])
+		if strings.TrimSpace(imageURL) == "" {
+			return nil, nil
+		}
+		return []dto.Message{{
+			Role: role,
+			Content: []map[string]interface{}{
+				{
+					"type": dto.ContentTypeImageURL,
+					"image_url": map[string]interface{}{
+						"url":    imageURL,
+						"detail": common.Interface2String(item["detail"]),
+					},
+				},
+			},
+		}}, nil
+	case "message", "":
+		if role == "" {
+			role = "user"
+		}
+		content, ok, err := fusionResponsesContentToChatContent(item["content"], role)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, nil
+		}
+		return []dto.Message{{Role: role, Content: content}}, nil
+	case "reasoning":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("fusion responses does not support input type %s in v1", itemType)
+	}
+}
+
+func fusionResponsesContentToChatContent(content interface{}, role string) (interface{}, bool, error) {
+	switch value := content.(type) {
+	case nil:
+		return "", false, nil
+	case string:
+		return value, true, nil
+	case []interface{}:
+		texts := make([]string, 0, len(value))
+		parts := make([]map[string]interface{}, 0, len(value))
+		textOnly := true
+		for _, rawPart := range value {
+			switch part := rawPart.(type) {
+			case string:
+				if strings.TrimSpace(part) != "" {
+					texts = append(texts, part)
+					parts = append(parts, map[string]interface{}{
+						"type": dto.ContentTypeText,
+						"text": part,
+					})
+				}
+			case map[string]interface{}:
+				partType := strings.TrimSpace(common.Interface2String(part["type"]))
+				switch partType {
+				case "input_text", "output_text", "text", "":
+					text := common.Interface2String(part["text"])
+					if strings.TrimSpace(text) != "" {
+						texts = append(texts, text)
+						parts = append(parts, map[string]interface{}{
+							"type": dto.ContentTypeText,
+							"text": text,
+						})
+					}
+				case "input_image":
+					if role == "assistant" || role == "tool" {
+						return nil, false, fmt.Errorf("fusion responses does not support %s image content in v1", role)
+					}
+					imageURL := fusionResponsesImageURLString(part["image_url"])
+					if strings.TrimSpace(imageURL) == "" {
+						continue
+					}
+					textOnly = false
+					parts = append(parts, map[string]interface{}{
+						"type": dto.ContentTypeImageURL,
+						"image_url": map[string]interface{}{
+							"url":    imageURL,
+							"detail": common.Interface2String(part["detail"]),
+						},
+					})
+				case "input_file":
+					return nil, false, errors.New("fusion responses does not support input type input_file in v1")
+				default:
+					return nil, false, fmt.Errorf("fusion responses does not support content part type %s in v1", partType)
+				}
+			default:
+				return nil, false, fmt.Errorf("fusion responses content contains unsupported part %T", rawPart)
+			}
+		}
+		if len(parts) == 0 {
+			return "", false, nil
+		}
+		if textOnly {
+			return strings.Join(texts, "\n"), true, nil
+		}
+		return parts, true, nil
+	case map[string]interface{}:
+		return fusionResponsesContentToChatContent([]interface{}{value}, role)
+	default:
+		return fusionResponsesStringOrJSON(value), true, nil
+	}
+}
+
+func fusionResponsesToolOutputString(item map[string]interface{}) string {
+	if output, ok := item["output"]; ok {
+		return fusionResponsesStringOrJSON(output)
+	}
+	if content, ok := item["content"]; ok {
+		converted, ok, err := fusionResponsesContentToChatContent(content, "tool")
+		if err == nil && ok {
+			return fusionResponsesStringOrJSON(converted)
+		}
+		return fusionResponsesStringOrJSON(content)
+	}
+	return ""
+}
+
+func fusionResponsesStringOrJSON(value interface{}) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return typed
+	default:
+		data, err := common.Marshal(typed)
+		if err != nil {
+			return common.Interface2String(typed)
+		}
+		return string(data)
+	}
+}
+
+func fusionResponsesImageURLString(value interface{}) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case map[string]interface{}:
+		return common.Interface2String(typed["url"])
+	default:
+		return ""
+	}
+}
+
+func fusionResponsesToolsToChatTools(raw []byte) ([]dto.ToolCallRequest, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var tools []map[string]interface{}
+	if err := common.Unmarshal(raw, &tools); err != nil {
+		return nil, fmt.Errorf("invalid responses tools: %w", err)
+	}
+	chatTools := make([]dto.ToolCallRequest, 0, len(tools))
+	for index, tool := range tools {
+		toolType, _ := tool["type"].(string)
+		if toolType == "" {
+			toolType = "function"
+		}
+		if toolType != "function" {
+			return nil, fmt.Errorf("fusion responses does not support tool type %s in v1", toolType)
+		}
+		functionMap, _ := tool["function"].(map[string]interface{})
+		if functionMap == nil {
+			functionMap = tool
+		}
+		name, _ := functionMap["name"].(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return nil, fmt.Errorf("responses tools[%d].name is required", index)
+		}
+		description, _ := functionMap["description"].(string)
+		chatTools = append(chatTools, dto.ToolCallRequest{
+			Type: "function",
+			Function: dto.FunctionRequest{
+				Name:        name,
+				Description: description,
+				Parameters:  functionMap["parameters"],
+			},
+		})
+	}
+	return chatTools, nil
+}
+
+func fusionResponsesToolChoiceToChatToolChoice(raw []byte) (any, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	switch common.GetJsonType(raw) {
+	case "string":
+		var choice string
+		if err := common.Unmarshal(raw, &choice); err != nil {
+			return nil, err
+		}
+		if choice == "auto" || choice == "none" || choice == "required" {
+			return choice, nil
+		}
+		return map[string]interface{}{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name": choice,
+			},
+		}, nil
+	case "object":
+		var choice map[string]interface{}
+		if err := common.Unmarshal(raw, &choice); err != nil {
+			return nil, err
+		}
+		toolType, _ := choice["type"].(string)
+		if toolType == "" {
+			toolType = "function"
+		}
+		if toolType != "function" {
+			return nil, fmt.Errorf("fusion responses does not support tool_choice type %s in v1", toolType)
+		}
+		if functionMap, ok := choice["function"].(map[string]interface{}); ok {
+			if name, _ := functionMap["name"].(string); strings.TrimSpace(name) != "" {
+				return choice, nil
+			}
+		}
+		name, _ := choice["name"].(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return nil, errors.New("responses tool_choice.name is required")
+		}
+		return map[string]interface{}{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name": name,
+			},
+		}, nil
+	default:
+		var choice any
+		if err := common.Unmarshal(raw, &choice); err != nil {
+			return nil, err
+		}
+		return choice, nil
+	}
+}
+
+func FusionResponses(c *gin.Context) {
+	if !fusion_setting.IsFusionEnabled() {
+		fusionOpenAIError(c, http.StatusForbidden, "Fusion is disabled", types.ErrorCodeAccessDenied)
+		return
+	}
+	if !common.HasPersistentCryptoSecret() {
+		fusionOpenAIError(c, http.StatusServiceUnavailable, "CRYPTO_SECRET is required for Fusion", types.ErrorCodeInvalidRequest)
+		return
+	}
+	if !validateFusionRawRelayRequest(c) {
 		return
 	}
 
-	relayInfo, err := buildFusionRelayInfo(c, &request)
-	if err != nil {
-		fusionOpenAIError(c, http.StatusInternalServerError, err.Error(), types.ErrorCodeGenRelayInfoFailed)
+	var responsesRequest dto.OpenAIResponsesRequest
+	if err := common.UnmarshalBodyReusable(c, &responsesRequest); err != nil {
+		status := http.StatusBadRequest
+		if common.IsRequestBodyTooLargeError(err) || errors.Is(err, common.ErrRequestBodyTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		fusionOpenAIError(c, status, err.Error(), types.ErrorCodeInvalidRequest)
 		return
 	}
-	groupRatioInfo := fusionGroupRatioInfo(c)
-	relayInfo.PriceData = types.PriceData{
-		GroupRatioInfo: groupRatioInfo,
-	}
-	policy := fusionBillingPolicyFromContext(c)
-	preConsumeInput, err := buildFusionPreConsumeInput(config, &request)
+	chatRequest, err := fusionResponsesRequestToChatRequest(&responsesRequest)
 	if err != nil {
 		fusionOpenAIError(c, http.StatusBadRequest, err.Error(), types.ErrorCodeInvalidRequest)
 		return
 	}
-	preConsumedQuota, err := service.CalculateFusionServiceQuota(preConsumeInput, policy)
-	if err != nil {
-		fusionOpenAIError(c, http.StatusServiceUnavailable, err.Error(), types.ErrorCodeModelPriceError)
+	if err := validateFusionRelayChatRequest(chatRequest); err != nil {
+		fusionOpenAIError(c, http.StatusBadRequest, err.Error(), types.ErrorCodeInvalidRequest)
 		return
 	}
-	relayInfo.PriceData.QuotaToPreConsume = preConsumedQuota
-	if newAPIError := service.PreConsumeBilling(c, preConsumedQuota, relayInfo); newAPIError != nil {
-		fusionNewAPIError(c, newAPIError)
-		return
-	}
-
-	result, err := service.RunFusionEngine(c.Request.Context(), service.FusionEngineRequest{
-		UserID:    relayInfo.UserId,
-		TokenID:   relayInfo.TokenId,
-		TokenName: c.GetString("token_name"),
-		Config:    config,
-		Request:   &request,
-	})
-	if err != nil {
-		if relayInfo.Billing != nil {
-			relayInfo.Billing.Refund(c)
+	if responsesRequest.Stream != nil && *responsesRequest.Stream {
+		prepared, ok := prepareFusionRelay(c, chatRequest)
+		if !ok {
+			return
 		}
-		fusionOpenAIError(c, http.StatusBadGateway, err.Error(), types.ErrorCodeBadResponse)
-		return
-	}
-
-	actualQuota, err := service.CalculateFusionServiceQuota(service.BuildFusionBillingInput(result), policy)
-	if err != nil {
-		if relayInfo.Billing != nil {
-			relayInfo.Billing.Refund(c)
+		helper.SetEventStreamHeaders(c)
+		execution, ok := waitFusionStreamExecution(c, prepared, writeFusionResponsesStreamError)
+		if !ok {
+			return
 		}
-		fusionOpenAIError(c, http.StatusServiceUnavailable, err.Error(), types.ErrorCodeModelPriceError)
+		writeFusionResponsesStream(c, chatRequest.Model, execution.Result)
 		return
 	}
-	relayInfo.SetFirstResponseTime()
-	model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, actualQuota)
-	if err := service.SettleBilling(c, relayInfo, actualQuota); err != nil {
-		common.SysError("error settling fusion billing: " + err.Error())
+	execution, ok := runFusionRelay(c, chatRequest)
+	if !ok {
+		return
 	}
-	recordFusionConsumeLog(c, relayInfo, result, preConsumedQuota, actualQuota, policy)
-	c.JSON(http.StatusOK, buildFusionChatCompletionResponse(request.Model, result))
+	c.JSON(http.StatusOK, buildFusionResponsesResponse(chatRequest.Model, execution.Result))
 }
 
 func validateFusionKeyStatus(status int) error {
@@ -532,18 +1403,20 @@ func buildFusionAPIKeyResponse(key *model.FusionAPIKey) (dto.FusionAPIKeyRespons
 		return dto.FusionAPIKeyResponse{}, err
 	}
 	return dto.FusionAPIKeyResponse{
-		Id:           key.Id,
-		Name:         key.Name,
-		Provider:     key.Provider,
-		BaseURL:      key.BaseURL,
-		DefaultModel: key.DefaultModel,
-		Models:       models,
-		APIKeyHint:   key.APIKeyHint,
-		Status:       key.Status,
-		LastTestTime: key.LastTestTime,
-		LastError:    key.LastError,
-		CreatedAt:    key.CreatedAt,
-		UpdatedAt:    key.UpdatedAt,
+		Id:             key.Id,
+		Name:           key.Name,
+		Provider:       key.Provider,
+		TemplateID:     key.TemplateID,
+		BaseURL:        key.BaseURL,
+		DefaultModel:   key.DefaultModel,
+		Models:         models,
+		UpstreamConfig: key.UpstreamConfig,
+		APIKeyHint:     key.APIKeyHint,
+		Status:         key.Status,
+		LastTestTime:   key.LastTestTime,
+		LastError:      key.LastError,
+		CreatedAt:      key.CreatedAt,
+		UpdatedAt:      key.UpdatedAt,
 	}, nil
 }
 
@@ -559,6 +1432,53 @@ func buildFusionAPIKeyResponses(keys []*model.FusionAPIKey) ([]dto.FusionAPIKeyR
 	return responses, nil
 }
 
+func buildFusionUpstreamTemplateFromRequest(req dto.FusionUpstreamTemplateRequest) *model.FusionUpstreamTemplate {
+	return &model.FusionUpstreamTemplate{
+		Name:                 req.Name,
+		ProviderLabel:        req.ProviderLabel,
+		Protocol:             req.Protocol,
+		EndpointPath:         req.EndpointPath,
+		AuthType:             req.AuthType,
+		AuthHeader:           req.AuthHeader,
+		AuthQueryName:        req.AuthQueryName,
+		DefaultHeaders:       req.DefaultHeaders,
+		DefaultQuery:         req.DefaultQuery,
+		DefaultBodyOverrides: req.DefaultBodyOverrides,
+		DetectRules:          req.DetectRules,
+		Enabled:              req.Enabled,
+		Sort:                 req.Sort,
+	}
+}
+
+func buildFusionUpstreamTemplateResponse(template *model.FusionUpstreamTemplate) dto.FusionUpstreamTemplateResponse {
+	return dto.FusionUpstreamTemplateResponse{
+		Id:                   template.Id,
+		Name:                 template.Name,
+		ProviderLabel:        template.ProviderLabel,
+		Protocol:             template.Protocol,
+		EndpointPath:         template.EndpointPath,
+		AuthType:             template.AuthType,
+		AuthHeader:           template.AuthHeader,
+		AuthQueryName:        template.AuthQueryName,
+		DefaultHeaders:       template.DefaultHeaders,
+		DefaultQuery:         template.DefaultQuery,
+		DefaultBodyOverrides: template.DefaultBodyOverrides,
+		DetectRules:          template.DetectRules,
+		Enabled:              template.Enabled,
+		Sort:                 template.Sort,
+		CreatedAt:            template.CreatedAt,
+		UpdatedAt:            template.UpdatedAt,
+	}
+}
+
+func buildFusionUpstreamTemplateResponses(templates []*model.FusionUpstreamTemplate) []dto.FusionUpstreamTemplateResponse {
+	responses := make([]dto.FusionUpstreamTemplateResponse, 0, len(templates))
+	for _, template := range templates {
+		responses = append(responses, buildFusionUpstreamTemplateResponse(template))
+	}
+	return responses
+}
+
 func validateFusionAPIKeyFields(name, provider, baseURL, defaultModel string) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("name is required")
@@ -566,8 +1486,8 @@ func validateFusionAPIKeyFields(name, provider, baseURL, defaultModel string) er
 	if len(strings.TrimSpace(name)) > fusionNameMaxLength {
 		return fmt.Errorf("name must be at most %d characters", fusionNameMaxLength)
 	}
-	if provider != "" && provider != model.FusionProviderOpenAICompatible {
-		return fmt.Errorf("unsupported fusion provider: %s", provider)
+	if len(strings.TrimSpace(provider)) > 64 {
+		return errors.New("provider must be at most 64 characters")
 	}
 	if strings.TrimSpace(baseURL) == "" {
 		return errors.New("base_url is required")
@@ -579,6 +1499,20 @@ func validateFusionAPIKeyFields(name, provider, baseURL, defaultModel string) er
 		return fmt.Errorf("default_model must be at most %d characters", fusionDefaultModelMaxBytes)
 	}
 	return nil
+}
+
+func resolveFusionTemplateForKeyRequest(templateID int) (*model.FusionUpstreamTemplate, error) {
+	if templateID > 0 {
+		return model.GetEnabledFusionUpstreamTemplateByID(templateID)
+	}
+	template, err := model.GetDefaultEnabledFusionUpstreamTemplate()
+	if err == nil {
+		return template, nil
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return model.EnsureDefaultFusionUpstreamTemplate()
+	}
+	return nil, err
 }
 
 func prepareFusionAPIKeyForCreate(userId int, req dto.FusionAPIKeyCreateRequest) (*model.FusionAPIKey, error) {
@@ -596,15 +1530,26 @@ func prepareFusionAPIKeyForCreate(userId int, req dto.FusionAPIKeyCreateRequest)
 	if err != nil {
 		return nil, err
 	}
+	template, err := resolveFusionTemplateForKeyRequest(req.TemplateID)
+	if err != nil {
+		return nil, err
+	}
+	if req.Provider == "" {
+		req.Provider = model.FusionProviderOpenAICompatible
+	}
 	key := &model.FusionAPIKey{
 		UserId:       userId,
 		Name:         req.Name,
 		Provider:     req.Provider,
+		TemplateID:   template.Id,
 		BaseURL:      normalizedBaseURL,
 		DefaultModel: req.DefaultModel,
 		Status:       model.FusionKeyStatusEnabled,
 	}
 	key.Normalize()
+	if err := key.SetUpstreamConfig(req.UpstreamConfig); err != nil {
+		return nil, err
+	}
 	if err := key.SetModels(req.Models); err != nil {
 		return nil, err
 	}
@@ -636,6 +1581,20 @@ func prepareFusionAPIKeyForUpdate(existing *model.FusionAPIKey, req dto.FusionAP
 	if err := validateFusionKeyStatus(status); err != nil {
 		return nil, err
 	}
+	templateID := req.TemplateID
+	if templateID == 0 {
+		templateID = existing.TemplateID
+	}
+	template, err := resolveFusionTemplateForKeyRequest(templateID)
+	if err != nil {
+		return nil, err
+	}
+	if req.Provider == "" {
+		req.Provider = existing.Provider
+	}
+	if req.Provider == "" {
+		req.Provider = model.FusionProviderOpenAICompatible
+	}
 	normalizedBaseURL, err := common.ValidateFusionBaseURL(req.BaseURL, fusionBaseURLPolicyFromSetting())
 	if err != nil {
 		return nil, err
@@ -645,8 +1604,10 @@ func prepareFusionAPIKeyForUpdate(existing *model.FusionAPIKey, req dto.FusionAP
 		UserId:           existing.UserId,
 		Name:             req.Name,
 		Provider:         req.Provider,
+		TemplateID:       template.Id,
 		BaseURL:          normalizedBaseURL,
 		DefaultModel:     req.DefaultModel,
+		UpstreamConfig:   existing.UpstreamConfig,
 		APIKeyCiphertext: existing.APIKeyCiphertext,
 		APIKeyHint:       existing.APIKeyHint,
 		KeyFingerprint:   existing.KeyFingerprint,
@@ -655,6 +1616,9 @@ func prepareFusionAPIKeyForUpdate(existing *model.FusionAPIKey, req dto.FusionAP
 		LastTestTime:     existing.LastTestTime,
 	}
 	key.Normalize()
+	if err := key.SetUpstreamConfig(req.UpstreamConfig); err != nil {
+		return nil, err
+	}
 	if err := key.SetModels(req.Models); err != nil {
 		return nil, err
 	}
@@ -692,6 +1656,83 @@ func GetFusionAPIKeys(c *gin.Context) {
 		"items": responses,
 		"total": len(responses),
 	})
+}
+
+func GetFusionUpstreamTemplates(c *gin.Context) {
+	templates, err := model.ListFusionUpstreamTemplates(false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"items": buildFusionUpstreamTemplateResponses(templates),
+		"total": len(templates),
+	})
+}
+
+func AdminGetFusionUpstreamTemplates(c *gin.Context) {
+	templates, err := model.ListFusionUpstreamTemplates(true)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"items": buildFusionUpstreamTemplateResponses(templates),
+		"total": len(templates),
+	})
+}
+
+func AdminCreateFusionUpstreamTemplate(c *gin.Context) {
+	var req dto.FusionUpstreamTemplateRequest
+	if !bindFusionJSON(c, &req) {
+		return
+	}
+	template := buildFusionUpstreamTemplateFromRequest(req)
+	if err := template.Insert(); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, buildFusionUpstreamTemplateResponse(template))
+}
+
+func AdminUpdateFusionUpstreamTemplate(c *gin.Context) {
+	id, ok := parseFusionID(c)
+	if !ok {
+		return
+	}
+	var req dto.FusionUpstreamTemplateRequest
+	if !bindFusionJSON(c, &req) {
+		return
+	}
+	existing, err := model.GetFusionUpstreamTemplateByID(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	template := buildFusionUpstreamTemplateFromRequest(req)
+	template.Id = existing.Id
+	if err := template.Update(); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	updated, err := model.GetFusionUpstreamTemplateByID(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, buildFusionUpstreamTemplateResponse(updated))
+}
+
+func AdminDeleteFusionUpstreamTemplate(c *gin.Context) {
+	id, ok := parseFusionID(c)
+	if !ok {
+		return
+	}
+	if err := model.DeleteFusionUpstreamTemplateByID(id); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, nil)
 }
 
 func CreateFusionAPIKey(c *gin.Context) {
@@ -816,12 +1857,12 @@ func isFusionAPIKeyInUse(userId int, keyId int) (bool, error) {
 		if config.JudgeKeyID == keyId {
 			return true, nil
 		}
-		candidateIDs, err := config.GetCandidateKeyIDs()
+		candidates, err := config.GetCandidates()
 		if err != nil {
 			return false, err
 		}
-		for _, candidateID := range candidateIDs {
-			if candidateID == keyId {
+		for _, candidate := range candidates {
+			if candidate.KeyID == keyId {
 				return true, nil
 			}
 		}
@@ -829,8 +1870,57 @@ func isFusionAPIKeyInUse(userId int, keyId int) (bool, error) {
 	return false, nil
 }
 
+func fusionUpstreamConfigToMap(config model.FusionUpstreamConfig) map[string]interface{} {
+	data, err := common.Marshal(config)
+	if err != nil {
+		return map[string]interface{}{}
+	}
+	result := map[string]interface{}{}
+	if err := common.Unmarshal(data, &result); err != nil {
+		return map[string]interface{}{}
+	}
+	return result
+}
+
+func buildFusionAPIKeyTestResponse(result service.FusionUpstreamTestResult) dto.FusionAPIKeyTestResponse {
+	return dto.FusionAPIKeyTestResponse{
+		OK:             result.OK,
+		Status:         result.Status,
+		Message:        result.Message,
+		DetectedConfig: fusionUpstreamConfigToMap(result.DetectedConfig),
+	}
+}
+
+func TestUnsavedFusionAPIKey(c *gin.Context) {
+	if !validateFusionCryptoSecretGate(c) {
+		return
+	}
+	userId := c.GetInt("id")
+	var req dto.FusionAPIKeyTestRequest
+	if !bindFusionJSON(c, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		req.Name = "Fusion upstream test"
+	}
+	key, err := prepareFusionAPIKeyForCreate(userId, req.FusionAPIKeyCreateRequest)
+	if err != nil {
+		if strings.Contains(err.Error(), "CRYPTO_SECRET") {
+			fusionError(c, http.StatusServiceUnavailable, err)
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	result := service.TestFusionUpstreamKey(c.Request.Context(), service.FusionUpstreamTestRequest{
+		UserID: userId,
+		Key:    key,
+	})
+	common.ApiSuccess(c, buildFusionAPIKeyTestResponse(result))
+}
+
 func TestFusionAPIKey(c *gin.Context) {
-	if !validateFusionExecutionGate(c) {
+	if !validateFusionCryptoSecretGate(c) {
 		return
 	}
 	userId := c.GetInt("id")
@@ -847,7 +1937,44 @@ func TestFusionAPIKey(c *gin.Context) {
 		common.ApiError(c, errors.New("fusion api key is disabled"))
 		return
 	}
-	fusionError(c, http.StatusNotImplemented, errors.New("fusion key test execution is not implemented until billing and engine are available"))
+	testKey := key
+	if c.Request.Body != nil && c.Request.ContentLength != 0 {
+		var req dto.FusionAPIKeyUpdateRequest
+		if !bindFusionJSON(c, &req) {
+			return
+		}
+		testKey, err = prepareFusionAPIKeyForUpdate(key, req)
+		if err != nil {
+			if strings.Contains(err.Error(), "CRYPTO_SECRET") {
+				fusionError(c, http.StatusServiceUnavailable, err)
+				return
+			}
+			common.ApiError(c, err)
+			return
+		}
+		if testKey.Status != model.FusionKeyStatusEnabled {
+			common.ApiError(c, errors.New("fusion api key is disabled"))
+			return
+		}
+	}
+	result := service.TestFusionUpstreamKey(c.Request.Context(), service.FusionUpstreamTestRequest{
+		UserID: userId,
+		Key:    testKey,
+	})
+	lastError := result.Message
+	if result.OK {
+		lastError = ""
+	}
+	if err := model.DB.Model(&model.FusionAPIKey{}).
+		Where("id = ? AND user_id = ?", key.Id, userId).
+		Updates(map[string]interface{}{
+			"last_test_time": common.GetTimestamp(),
+			"last_error":     lastError,
+		}).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, buildFusionAPIKeyTestResponse(result))
 }
 
 func normalizeCandidateIDs(ids []int) ([]int, error) {
@@ -881,6 +2008,53 @@ func validateCandidateModels(candidateIDs []int, models map[string]string) error
 	return nil
 }
 
+func normalizeFusionCandidates(req dto.FusionConfigCreateRequest) ([]model.FusionCandidate, error) {
+	if len(req.Candidates) > 0 {
+		candidates := make([]model.FusionCandidate, 0, len(req.Candidates))
+		for _, candidate := range req.Candidates {
+			modelName := strings.TrimSpace(candidate.Model)
+			if candidate.KeyID <= 0 {
+				return nil, errors.New("candidates contains invalid key id")
+			}
+			if modelName == "" {
+				return nil, errors.New("candidate model is required")
+			}
+			candidates = append(candidates, model.FusionCandidate{
+				KeyID: candidate.KeyID,
+				Model: modelName,
+			})
+		}
+		return candidates, nil
+	}
+
+	candidateIDs, err := normalizeCandidateIDs(req.CandidateKeyIDs)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateCandidateModels(candidateIDs, req.CandidateModels); err != nil {
+		return nil, err
+	}
+	candidates := make([]model.FusionCandidate, 0, len(candidateIDs))
+	for _, keyID := range candidateIDs {
+		candidates = append(candidates, model.FusionCandidate{
+			KeyID: keyID,
+			Model: strings.TrimSpace(req.CandidateModels[strconv.Itoa(keyID)]),
+		})
+	}
+	return candidates, nil
+}
+
+func buildFusionCandidateDTOs(candidates []model.FusionCandidate) []dto.FusionCandidateConfig {
+	items := make([]dto.FusionCandidateConfig, 0, len(candidates))
+	for _, candidate := range candidates {
+		items = append(items, dto.FusionCandidateConfig{
+			KeyID: candidate.KeyID,
+			Model: candidate.Model,
+		})
+	}
+	return items
+}
+
 func prepareFusionConfig(userId int, req dto.FusionConfigCreateRequest) (*model.FusionConfig, error) {
 	req.Name = strings.TrimSpace(req.Name)
 	req.ModelAlias = strings.TrimSpace(req.ModelAlias)
@@ -901,19 +2075,16 @@ func prepareFusionConfig(userId int, req dto.FusionConfigCreateRequest) (*model.
 	if req.JudgeModel == "" {
 		return nil, errors.New("judge_model is required")
 	}
-	candidateIDs, err := normalizeCandidateIDs(req.CandidateKeyIDs)
+	candidates, err := normalizeFusionCandidates(req)
 	if err != nil {
 		return nil, err
 	}
-	if len(candidateIDs) == 0 {
-		return nil, errors.New("at least one candidate key is required")
+	if len(candidates) == 0 {
+		return nil, errors.New("at least one candidate model is required")
 	}
 	maxCandidates := fusion_setting.GetFusionMaxCandidatesPerConfig()
-	if maxCandidates > 0 && len(candidateIDs) > maxCandidates {
-		return nil, fmt.Errorf("candidate key count exceeds limit: %d", maxCandidates)
-	}
-	if err := validateCandidateModels(candidateIDs, req.CandidateModels); err != nil {
-		return nil, err
+	if maxCandidates > 0 && len(candidates) > maxCandidates {
+		return nil, fmt.Errorf("candidate model count exceeds limit: %d", maxCandidates)
 	}
 	timeoutMS := req.TimeoutMS
 	if timeoutMS <= 0 {
@@ -951,10 +2122,10 @@ func prepareFusionConfig(userId int, req dto.FusionConfigCreateRequest) (*model.
 		MinSuccesses: minSuccesses,
 		JudgePrompt:  strings.TrimSpace(req.JudgePrompt),
 	}
-	if err := config.SetCandidateKeyIDs(candidateIDs); err != nil {
+	if err := config.SetCandidates(candidates); err != nil {
 		return nil, err
 	}
-	if err := config.SetCandidateModels(req.CandidateModels); err != nil {
+	if err := config.SyncLegacyCandidateFields(candidates); err != nil {
 		return nil, err
 	}
 	if err := model.ValidateFusionConfigKeyOwnership(userId, config); err != nil {
@@ -964,6 +2135,10 @@ func prepareFusionConfig(userId int, req dto.FusionConfigCreateRequest) (*model.
 }
 
 func buildFusionConfigResponse(config *model.FusionConfig) (dto.FusionConfigResponse, error) {
+	candidates, err := config.GetCandidates()
+	if err != nil {
+		return dto.FusionConfigResponse{}, err
+	}
 	candidateIDs, err := config.GetCandidateKeyIDs()
 	if err != nil {
 		return dto.FusionConfigResponse{}, err
@@ -977,6 +2152,7 @@ func buildFusionConfigResponse(config *model.FusionConfig) (dto.FusionConfigResp
 		Name:            config.Name,
 		ModelAlias:      config.ModelAlias,
 		Enabled:         config.Enabled,
+		Candidates:      buildFusionCandidateDTOs(candidates),
 		CandidateKeyIDs: candidateIDs,
 		CandidateModels: candidateModels,
 		JudgeKeyID:      config.JudgeKeyID,

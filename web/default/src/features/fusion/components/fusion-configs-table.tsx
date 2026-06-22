@@ -19,13 +19,15 @@ For commercial licensing, please contact support@quantumnous.com
 import { Edit, Trash2 } from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Button } from '@/components/ui/button'
+
 import {
   DISABLED_ROW_DESKTOP,
   StaticDataTable,
   type StaticDataTableColumn,
 } from '@/components/data-table'
 import { StatusBadge, StatusBadgeList } from '@/components/status-badge'
+import { Button } from '@/components/ui/button'
+
 import type { FusionAPIKey, FusionConfig } from '../types'
 
 type FusionConfigsTableProps = {
@@ -38,11 +40,25 @@ type FusionConfigsTableProps = {
 
 export function FusionConfigsTable(props: FusionConfigsTableProps) {
   const { t } = useTranslation()
-  const keyNameById = useMemo(() => {
-    const result = new Map<number, string>()
-    props.keys.forEach((key) => result.set(key.id, key.name))
+  const keyInfoById = useMemo(() => {
+    const result = new Map<number, FusionAPIKey>()
+    props.keys.forEach((key) => result.set(key.id, key))
     return result
   }, [props.keys])
+  const modelLabel = (keyId: number, model: string) => {
+    const key = keyInfoById.get(keyId)
+    const keyName = key?.name ?? `#${keyId}`
+    const modelName = model || key?.default_model || '-'
+    return `${keyName} / ${modelName}`
+  }
+  const configCandidates = (config: FusionConfig) => {
+    const candidates = config.candidates ?? []
+    if (candidates.length > 0) return candidates
+    return (config.candidate_key_ids ?? []).map((keyId) => ({
+      key_id: keyId,
+      model: (config.candidate_models ?? {})[String(keyId)] ?? '',
+    }))
+  }
 
   const columns: StaticDataTableColumn<FusionConfig>[] = [
     {
@@ -75,37 +91,39 @@ export function FusionConfigsTable(props: FusionConfigsTableProps) {
       id: 'candidates',
       header: t('Candidates'),
       cellClassName: 'min-w-56',
-      cell: (config) => (
-        <StatusBadgeList
-          items={config.candidate_key_ids}
-          max={3}
-          empty={
-            <StatusBadge label='-' variant='neutral' copyable={false} />
-          }
-          renderItem={(keyId) => (
-            <StatusBadge
-              label={keyNameById.get(keyId) ?? `#${keyId}`}
-              variant='info'
-              copyable={false}
-              className='max-w-36'
-            />
-          )}
-        />
-      ),
+      cell: (config) => {
+        const candidates = configCandidates(config)
+        return (
+          <StatusBadgeList
+            items={candidates}
+            max={3}
+            empty={<StatusBadge label='-' variant='neutral' copyable={false} />}
+            getKey={(candidate, index) =>
+              `${candidate.key_id}:${candidate.model}-${index}`
+            }
+            renderItem={(candidate) => (
+              <StatusBadge
+                label={modelLabel(candidate.key_id, candidate.model)}
+                variant='info'
+                copyable={false}
+                className='max-w-52'
+              />
+            )}
+          />
+        )
+      },
     },
     {
       id: 'judge',
       header: t('Judge'),
       cellClassName: 'min-w-56',
       cell: (config) => (
-        <div className='min-w-0'>
-          <div className='truncate text-sm'>
-            {keyNameById.get(config.judge_key_id) ?? `#${config.judge_key_id}`}
-          </div>
-          <div className='text-muted-foreground truncate font-mono text-xs'>
-            {config.judge_model}
-          </div>
-        </div>
+        <StatusBadge
+          label={modelLabel(config.judge_key_id, config.judge_model)}
+          variant='neutral'
+          copyable={false}
+          className='max-w-52'
+        />
       ),
     },
     {
@@ -129,11 +147,7 @@ export function FusionConfigsTable(props: FusionConfigsTableProps) {
       header: t('Strategy'),
       cellClassName: 'min-w-32',
       cell: (config) => (
-        <StatusBadge
-          label={config.strategy}
-          variant='blue'
-          copyable={false}
-        />
+        <StatusBadge label={config.strategy} variant='blue' copyable={false} />
       ),
     },
     {

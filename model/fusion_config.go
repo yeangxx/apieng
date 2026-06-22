@@ -21,6 +21,7 @@ type FusionConfig struct {
 	Name            string         `json:"name" gorm:"type:varchar(80);index"`
 	ModelAlias      string         `json:"model_alias" gorm:"type:varchar(80);index:idx_fusion_config_user_alias"`
 	Enabled         bool           `json:"enabled" gorm:"index:idx_fusion_config_user_enabled"`
+	Candidates      string         `json:"candidates" gorm:"type:text"`
 	CandidateKeyIDs string         `json:"candidate_key_ids" gorm:"type:text"`
 	CandidateModels string         `json:"candidate_models" gorm:"type:text"`
 	JudgeKeyID      int            `json:"judge_key_id" gorm:"index"`
@@ -33,6 +34,11 @@ type FusionConfig struct {
 	CreatedAt       int64          `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt       int64          `json:"updated_at" gorm:"autoUpdateTime"`
 	DeletedAt       gorm.DeletedAt `json:"-" gorm:"index"`
+}
+
+type FusionCandidate struct {
+	KeyID int    `json:"key_id"`
+	Model string `json:"model"`
 }
 
 func (config *FusionConfig) Normalize() {
@@ -107,6 +113,74 @@ func (config *FusionConfig) GetCandidateModels() (map[string]string, error) {
 	return models, nil
 }
 
+func (config *FusionConfig) SetCandidates(candidates []FusionCandidate) error {
+	normalized := make([]FusionCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate.Model = strings.TrimSpace(candidate.Model)
+		if candidate.KeyID > 0 && candidate.Model != "" {
+			normalized = append(normalized, candidate)
+		}
+	}
+	data, err := common.Marshal(normalized)
+	if err != nil {
+		return err
+	}
+	config.Candidates = string(data)
+	return nil
+}
+
+func (config *FusionConfig) GetCandidates() ([]FusionCandidate, error) {
+	if strings.TrimSpace(config.Candidates) != "" {
+		var candidates []FusionCandidate
+		if err := common.UnmarshalJsonStr(config.Candidates, &candidates); err != nil {
+			return nil, err
+		}
+		normalized := make([]FusionCandidate, 0, len(candidates))
+		for _, candidate := range candidates {
+			candidate.Model = strings.TrimSpace(candidate.Model)
+			if candidate.KeyID > 0 && candidate.Model != "" {
+				normalized = append(normalized, candidate)
+			}
+		}
+		if len(normalized) > 0 {
+			return normalized, nil
+		}
+	}
+
+	candidateIDs, err := config.GetCandidateKeyIDs()
+	if err != nil {
+		return nil, err
+	}
+	candidateModels, err := config.GetCandidateModels()
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]FusionCandidate, 0, len(candidateIDs))
+	for _, keyID := range candidateIDs {
+		candidates = append(candidates, FusionCandidate{
+			KeyID: keyID,
+			Model: strings.TrimSpace(candidateModels[strconv.Itoa(keyID)]),
+		})
+	}
+	return candidates, nil
+}
+
+func (config *FusionConfig) SyncLegacyCandidateFields(candidates []FusionCandidate) error {
+	ids := make([]int, 0, len(candidates))
+	models := make(map[string]string, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.KeyID <= 0 {
+			continue
+		}
+		ids = append(ids, candidate.KeyID)
+		models[strconv.Itoa(candidate.KeyID)] = strings.TrimSpace(candidate.Model)
+	}
+	if err := config.SetCandidateKeyIDs(ids); err != nil {
+		return err
+	}
+	return config.SetCandidateModels(models)
+}
+
 func ValidateFusionConfigKeyOwnership(userId int, config *FusionConfig) error {
 	if userId == 0 || config == nil {
 		return errors.New("user id and fusion config are required")
@@ -119,45 +193,46 @@ func ValidateFusionConfigKeyOwnership(userId int, config *FusionConfig) error {
 		return fmt.Errorf("unsupported fusion strategy: %s", config.Strategy)
 	}
 
-	candidateIDs, err := config.GetCandidateKeyIDs()
+	candidates, err := config.GetCandidates()
 	if err != nil {
 		return err
 	}
-	if len(candidateIDs) == 0 {
-		return errors.New("at least one candidate key is required")
+	if len(candidates) == 0 {
+		return errors.New("at least one candidate model is required")
 	}
-	if config.MinSuccesses < 1 || config.MinSuccesses > len(candidateIDs) {
+	if config.MinSuccesses < 1 || config.MinSuccesses > len(candidates) {
 		return errors.New("min_successes must be between 1 and candidate count")
 	}
 
-	candidateModels, err := config.GetCandidateModels()
-	if err != nil {
-		return err
-	}
-	seen := make(map[int]struct{}, len(candidateIDs))
-	for _, keyID := range candidateIDs {
-		if keyID <= 0 {
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.KeyID <= 0 {
 			return errors.New("candidate key id is invalid")
 		}
-		if _, ok := seen[keyID]; ok {
-			return fmt.Errorf("duplicate candidate key id: %d", keyID)
-		}
-		seen[keyID] = struct{}{}
+		candidate.Model = strings.TrimSpace(candidate.Model)
 
-		key, err := GetFusionAPIKeyByUserAndId(userId, keyID)
+		key, err := GetFusionAPIKeyByUserAndId(userId, candidate.KeyID)
 		if err != nil {
-			return fmt.Errorf("candidate key %d is not owned by user %d: %w", keyID, userId, err)
+			return fmt.Errorf("candidate key %d is not owned by user %d: %w", candidate.KeyID, userId, err)
 		}
-		modelName := strings.TrimSpace(candidateModels[strconv.Itoa(keyID)])
+		modelName := candidate.Model
 		if modelName == "" {
 			modelName = key.DefaultModel
 		}
+		if modelName == "" {
+			return errors.New("candidate model is required")
+		}
+		identity := fmt.Sprintf("%d:%s", candidate.KeyID, modelName)
+		if _, ok := seen[identity]; ok {
+			return fmt.Errorf("duplicate candidate model: key %d model %s", candidate.KeyID, modelName)
+		}
+		seen[identity] = struct{}{}
 		allowed, err := key.IsModelAllowed(modelName)
 		if err != nil {
 			return err
 		}
 		if !allowed {
-			return fmt.Errorf("candidate model %s is not allowed by key %d", modelName, keyID)
+			return fmt.Errorf("candidate model %s is not allowed by key %d", modelName, candidate.KeyID)
 		}
 	}
 
@@ -236,6 +311,7 @@ func (config *FusionConfig) Update() error {
 			"name":              config.Name,
 			"model_alias":       config.ModelAlias,
 			"enabled":           config.Enabled,
+			"candidates":        config.Candidates,
 			"candidate_key_ids": config.CandidateKeyIDs,
 			"candidate_models":  config.CandidateModels,
 			"judge_key_id":      config.JudgeKeyID,

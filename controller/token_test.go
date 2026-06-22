@@ -14,8 +14,11 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -48,21 +51,21 @@ type sqliteColumnInfo struct {
 }
 
 type legacyToken struct {
-	Id                 int            `gorm:"primaryKey"`
-	UserId             int            `gorm:"index"`
-	Key                string         `gorm:"column:key;type:char(48);uniqueIndex"`
-	Status             int            `gorm:"default:1"`
-	Name               string         `gorm:"index"`
-	CreatedTime        int64          `gorm:"bigint"`
-	AccessedTime       int64          `gorm:"bigint"`
-	ExpiredTime        int64          `gorm:"bigint;default:-1"`
-	RemainQuota        int            `gorm:"default:0"`
+	Id                 int    `gorm:"primaryKey"`
+	UserId             int    `gorm:"index"`
+	Key                string `gorm:"column:key;type:char(48);uniqueIndex"`
+	Status             int    `gorm:"default:1"`
+	Name               string `gorm:"index"`
+	CreatedTime        int64  `gorm:"bigint"`
+	AccessedTime       int64  `gorm:"bigint"`
+	ExpiredTime        int64  `gorm:"bigint;default:-1"`
+	RemainQuota        int    `gorm:"default:0"`
 	UnlimitedQuota     bool
 	ModelLimitsEnabled bool
-	ModelLimits        string         `gorm:"type:text"`
-	AllowIps           *string        `gorm:"default:''"`
-	UsedQuota          int            `gorm:"default:0"`
-	Group              string         `gorm:"column:group;default:''"`
+	ModelLimits        string  `gorm:"type:text"`
+	AllowIps           *string `gorm:"default:''"`
+	UsedQuota          int     `gorm:"default:0"`
+	Group              string  `gorm:"column:group;default:''"`
 	CrossGroupRetry    bool
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
@@ -111,6 +114,20 @@ func setupTokenControllerTestDB(t *testing.T) *gorm.DB {
 
 	db := openTokenControllerTestDB(t)
 	migrateTokenControllerTestDB(t, db)
+	return db
+}
+
+func setupTokenFusionValidationTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db := setupTokenControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.FusionConfig{}))
+	savedConfig := config.GlobalConfig.ExportAllConfigs()
+	t.Cleanup(func() {
+		require.NoError(t, config.GlobalConfig.LoadFromDB(savedConfig))
+	})
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"fusion_setting.allowed_token_groups": `["fusion-basic"]`,
+	}))
 	return db
 }
 
@@ -180,6 +197,23 @@ func seedToken(t *testing.T, db *gorm.DB, userID int, name string, rawKey string
 		t.Fatalf("failed to create token: %v", err)
 	}
 	return token
+}
+
+func seedFusionConfigForTokenTest(t *testing.T, db *gorm.DB, userID int, alias string, enabled bool) {
+	t.Helper()
+	config := &model.FusionConfig{
+		UserId:       userID,
+		Name:         "token fusion",
+		ModelAlias:   alias,
+		Enabled:      enabled,
+		JudgeKeyID:   1,
+		JudgeModel:   "judge",
+		Strategy:     model.FusionStrategySynthesize,
+		TimeoutMS:    45000,
+		MaxParallel:  1,
+		MinSuccesses: 1,
+	}
+	require.NoError(t, db.Create(config).Error)
 }
 
 func newAuthenticatedContext(t *testing.T, method string, target string, body any, userID int) (*gin.Context, *httptest.ResponseRecorder) {
@@ -504,6 +538,145 @@ func TestUpdateTokenMasksKeyInResponse(t *testing.T) {
 	if strings.Contains(recorder.Body.String(), token.Key) {
 		t.Fatalf("update response leaked raw token key: %s", recorder.Body.String())
 	}
+}
+
+func TestAddTokenValidatesFusionBinding(t *testing.T) {
+	testCases := []struct {
+		name               string
+		userID             int
+		group              string
+		modelLimitsEnabled bool
+		modelLimits        string
+		seed               func(t *testing.T, db *gorm.DB)
+		wantSuccess        bool
+		wantMessage        string
+	}{
+		{
+			name:               "normal group with normal model limit",
+			userID:             1,
+			group:              "default",
+			modelLimitsEnabled: true,
+			modelLimits:        "gpt-4o-mini",
+			wantSuccess:        true,
+		},
+		{
+			name:               "normal group with fusion alias",
+			userID:             1,
+			group:              "default",
+			modelLimitsEnabled: true,
+			modelLimits:        "fusion:research",
+			wantMessage:        "Fusion models require a Fusion token group",
+		},
+		{
+			name:               "fusion group without model limit",
+			userID:             1,
+			group:              "fusion-basic",
+			modelLimitsEnabled: false,
+			modelLimits:        "",
+			wantMessage:        "exactly one enabled Fusion model limit",
+		},
+		{
+			name:               "fusion group with multiple model limits",
+			userID:             1,
+			group:              "fusion-basic",
+			modelLimitsEnabled: true,
+			modelLimits:        "fusion:research,fusion:other",
+			wantMessage:        "exactly one enabled Fusion model limit",
+		},
+		{
+			name:               "fusion group with foreign alias",
+			userID:             1,
+			group:              "fusion-basic",
+			modelLimitsEnabled: true,
+			modelLimits:        "fusion:foreign",
+			seed: func(t *testing.T, db *gorm.DB) {
+				seedFusionConfigForTokenTest(t, db, 2, "fusion:foreign", true)
+			},
+			wantMessage: "not available for this user",
+		},
+		{
+			name:               "fusion group with disabled config",
+			userID:             1,
+			group:              "fusion-basic",
+			modelLimitsEnabled: true,
+			modelLimits:        "fusion:research",
+			seed: func(t *testing.T, db *gorm.DB) {
+				seedFusionConfigForTokenTest(t, db, 1, "fusion:research", false)
+			},
+			wantMessage: "is disabled",
+		},
+		{
+			name:               "fusion group with enabled config",
+			userID:             1,
+			group:              "fusion-basic",
+			modelLimitsEnabled: true,
+			modelLimits:        "fusion:research",
+			seed: func(t *testing.T, db *gorm.DB) {
+				seedFusionConfigForTokenTest(t, db, 1, "fusion:research", true)
+			},
+			wantSuccess: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			db := setupTokenFusionValidationTestDB(t)
+			if testCase.seed != nil {
+				testCase.seed(t, db)
+			}
+			body := map[string]any{
+				"name":                 "fusion-token",
+				"expired_time":         -1,
+				"remain_quota":         100,
+				"unlimited_quota":      true,
+				"model_limits_enabled": testCase.modelLimitsEnabled,
+				"model_limits":         testCase.modelLimits,
+				"group":                testCase.group,
+				"cross_group_retry":    false,
+			}
+
+			ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, testCase.userID)
+			AddToken(ctx)
+
+			response := decodeAPIResponse(t, recorder)
+			assert.Equal(t, testCase.wantSuccess, response.Success)
+			if testCase.wantSuccess {
+				total, err := model.CountUserTokens(testCase.userID)
+				require.NoError(t, err)
+				assert.Equal(t, int64(1), total)
+				return
+			}
+			assert.Contains(t, response.Message, testCase.wantMessage)
+			total, err := model.CountUserTokens(testCase.userID)
+			require.NoError(t, err)
+			assert.Equal(t, int64(0), total)
+		})
+	}
+}
+
+func TestUpdateTokenValidatesFusionBinding(t *testing.T) {
+	db := setupTokenFusionValidationTestDB(t)
+	token := seedToken(t, db, 1, "editable-fusion-token", "update1234fusion5678")
+	seedFusionConfigForTokenTest(t, db, 1, "fusion:research", true)
+
+	body := map[string]any{
+		"id":                   token.Id,
+		"name":                 "updated-token",
+		"expired_time":         -1,
+		"remain_quota":         100,
+		"unlimited_quota":      true,
+		"model_limits_enabled": true,
+		"model_limits":         "fusion:research",
+		"group":                "default",
+		"cross_group_retry":    false,
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", body, 1)
+	UpdateToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	require.False(t, response.Success)
+	assert.Contains(t, response.Message, "Fusion models require a Fusion token group")
 }
 
 func TestGetTokenKeyRequiresOwnershipAndReturnsFullKey(t *testing.T) {

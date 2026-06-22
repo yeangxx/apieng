@@ -17,9 +17,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
+
 import {
   FUSION_KEY_STATUS,
-  FUSION_PROVIDER_OPENAI_COMPATIBLE,
+  FUSION_PROTOCOL_OPENAI_CHAT_COMPATIBLE,
   FUSION_STRATEGY_SYNTHESIZE,
 } from './constants'
 
@@ -34,17 +35,43 @@ export type FusionListResponse<T> = {
   total: number
 }
 
+export const fusionCandidateSchema = z.object({
+  key_id: z.number(),
+  model: z.string(),
+})
+
 export const fusionAPIKeySchema = z.object({
   id: z.number(),
   name: z.string(),
   provider: z.string(),
+  template_id: z.number().default(0),
   base_url: z.string(),
   default_model: z.string(),
   models: z.array(z.string()).default([]),
+  upstream_config: z.string().default('{}'),
   api_key_hint: z.string().default(''),
   status: z.number(),
   last_test_time: z.number().default(0),
   last_error: z.string().default(''),
+  created_at: z.number(),
+  updated_at: z.number(),
+})
+
+export const fusionUpstreamTemplateSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  provider_label: z.string(),
+  protocol: z.string(),
+  endpoint_path: z.string(),
+  auth_type: z.string(),
+  auth_header: z.string(),
+  auth_query_name: z.string(),
+  default_headers: z.string().default('{}'),
+  default_query: z.string().default('{}'),
+  default_body_overrides: z.string().default('{}'),
+  detect_rules: z.string().default('[]'),
+  enabled: z.boolean(),
+  sort: z.number(),
   created_at: z.number(),
   updated_at: z.number(),
 })
@@ -54,6 +81,7 @@ export const fusionConfigSchema = z.object({
   name: z.string(),
   model_alias: z.string(),
   enabled: z.boolean(),
+  candidates: z.array(fusionCandidateSchema).default([]),
   candidate_key_ids: z.array(z.number()).default([]),
   candidate_models: z.record(z.string(), z.string()).default({}),
   judge_key_id: z.number(),
@@ -69,11 +97,34 @@ export const fusionConfigSchema = z.object({
 
 export type FusionAPIKey = z.infer<typeof fusionAPIKeySchema>
 export type FusionConfig = z.infer<typeof fusionConfigSchema>
+export type FusionUpstreamTemplate = z.infer<
+  typeof fusionUpstreamTemplateSchema
+>
+
+function isJsonObject(value: string) {
+  try {
+    const parsed = JSON.parse(value.trim() || '{}')
+    return (
+      parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+    )
+  } catch {
+    return false
+  }
+}
+
+function isJsonArray(value: string) {
+  try {
+    return Array.isArray(JSON.parse(value.trim() || '[]'))
+  } catch {
+    return false
+  }
+}
 
 export const getFusionKeyFormSchema = (t: (key: string) => string) =>
   z.object({
     name: z.string().trim().min(1, t('Name is required')).max(80),
-    provider: z.literal(FUSION_PROVIDER_OPENAI_COMPATIBLE),
+    provider: z.string().trim().min(1),
+    template_id: z.coerce.number().int().positive(t('Upstream protocol is required')),
     base_url: z.string().trim().min(1, t('Base URL is required')),
     api_key: z.string(),
     default_model: z
@@ -91,6 +142,9 @@ export const getFusionKeyFormSchema = (t: (key: string) => string) =>
           value === FUSION_KEY_STATUS.DISABLED,
         t('Invalid status')
       ),
+    upstream_config_text: z
+      .string()
+      .refine(isJsonObject, t('Enter a JSON object')),
   })
 
 export type FusionKeyFormValues = z.output<
@@ -109,12 +163,21 @@ export const getFusionConfigFormSchema = (t: (key: string) => string) =>
         .trim()
         .regex(
           /^fusion:[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/,
-          t('Model alias must start with fusion: and contain only letters, numbers, dots, underscores, or hyphens')
+          t(
+            'Model alias must start with fusion: and contain only letters, numbers, dots, underscores, or hyphens'
+          )
         ),
       enabled: z.boolean(),
-      candidate_key_ids: z.array(z.number().int().positive()),
-      candidate_models_text: z.string(),
-      judge_key_id: z.coerce.number().int().positive(t('Judge key is required')),
+      candidates: z.array(
+        z.object({
+          key_id: z.number().int().positive(),
+          model: z.string().trim().min(1, t('Candidate model is required')),
+        })
+      ),
+      judge_key_id: z.coerce
+        .number()
+        .int()
+        .positive(t('Judge key is required')),
       judge_model: z.string().trim().min(1, t('Judge model is required')),
       strategy: z.literal(FUSION_STRATEGY_SYNTHESIZE),
       timeout_ms: z.coerce.number().int().min(1000),
@@ -123,14 +186,14 @@ export const getFusionConfigFormSchema = (t: (key: string) => string) =>
       judge_prompt: z.string(),
     })
     .superRefine((values, ctx) => {
-      if (values.candidate_key_ids.length === 0) {
+      if (values.candidates.length === 0) {
         ctx.addIssue({
           code: 'custom',
-          path: ['candidate_key_ids'],
-          message: t('Select at least one candidate key'),
+          path: ['candidates'],
+          message: t('Select at least one candidate model'),
         })
       }
-      if (values.min_successes > values.candidate_key_ids.length) {
+      if (values.min_successes > values.candidates.length) {
         ctx.addIssue({
           code: 'custom',
           path: ['min_successes'],
@@ -149,17 +212,74 @@ export type FusionConfigFormInput = z.input<
 export type FusionAPIKeyPayload = {
   name: string
   provider: string
+  template_id: number
   base_url: string
   api_key?: string
   default_model: string
   models: string[]
+  upstream_config: string
   status?: number
 }
+
+export type FusionUpstreamTemplatePayload = {
+  name: string
+  provider_label: string
+  protocol: string
+  endpoint_path: string
+  auth_type: string
+  auth_header: string
+  auth_query_name: string
+  default_headers: string
+  default_query: string
+  default_body_overrides: string
+  detect_rules: string
+  enabled: boolean
+  sort: number
+}
+
+export type FusionAPIKeyTestResponse = {
+  ok: boolean
+  status: number
+  message: string
+  detected_config: Record<string, unknown>
+}
+
+export const getFusionUpstreamTemplateFormSchema = (
+  t: (key: string) => string
+) =>
+  z.object({
+    name: z.string().trim().min(1, t('Name is required')).max(80),
+    provider_label: z
+      .string()
+      .trim()
+      .min(1, t('Provider label is required'))
+      .max(80),
+    protocol: z.literal(FUSION_PROTOCOL_OPENAI_CHAT_COMPATIBLE),
+    endpoint_path: z
+      .string()
+      .trim()
+      .min(1, t('Endpoint path is required'))
+      .refine((value) => value.startsWith('/'), t('Endpoint path must start with /')),
+    auth_type: z.enum(['bearer', 'header', 'query', 'none']),
+    auth_header: z.string(),
+    auth_query_name: z.string(),
+    default_headers: z.string().refine(isJsonObject, t('Enter a JSON object')),
+    default_query: z.string().refine(isJsonObject, t('Enter a JSON object')),
+    default_body_overrides: z
+      .string()
+      .refine(isJsonObject, t('Enter a JSON object')),
+    detect_rules: z.string().refine(isJsonArray, t('Enter a JSON array')),
+    enabled: z.boolean(),
+    sort: z.coerce.number().int(),
+  })
+
+export type FusionCandidateConfig = z.infer<typeof fusionCandidateSchema>
 
 export type FusionConfigPayload = {
   name: string
   model_alias: string
   enabled: boolean
+  candidates: FusionCandidateConfig[]
   candidate_key_ids: number[]
   candidate_models: Record<string, string>
   judge_key_id: number

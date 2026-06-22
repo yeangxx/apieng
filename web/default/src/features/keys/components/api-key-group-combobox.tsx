@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMemo, useState } from 'react'
 import { Check, ChevronsUpDown } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { cn } from '@/lib/utils'
+
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -35,12 +35,14 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
+import { cn } from '@/lib/utils'
 
 export type ApiKeyGroupOption = {
   value: string
   label: string
   desc?: string
   ratio?: number | string
+  fusion?: boolean
 }
 
 type ApiKeyGroupComboboxProps = {
@@ -95,6 +97,18 @@ function GroupRatioBadge({ ratio }: { ratio: ApiKeyGroupOption['ratio'] }) {
   )
 }
 
+function FusionGroupBadge() {
+  const { t } = useTranslation()
+  return (
+    <Badge
+      variant='outline'
+      className='border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-900/60 dark:bg-violet-950/40 dark:text-violet-300'
+    >
+      {t('Fusion')}
+    </Badge>
+  )
+}
+
 export function ApiKeyGroupCombobox({
   options,
   value,
@@ -117,6 +131,7 @@ export function ApiKeyGroupCombobox({
         option.value.toLowerCase().includes(search) ||
         option.label.toLowerCase().includes(search) ||
         option.desc?.toLowerCase().includes(search) ||
+        (option.fusion && 'fusion'.includes(search)) ||
         ratioText.includes(search)
       )
     })
@@ -154,7 +169,10 @@ export function ApiKeyGroupCombobox({
             )}
           </span>
           <span className='hidden sm:block'>
-            <GroupRatioBadge ratio={selectedOption?.ratio} />
+            <span className='flex items-center gap-2'>
+              {selectedOption?.fusion && <FusionGroupBadge />}
+              <GroupRatioBadge ratio={selectedOption?.ratio} />
+            </span>
           </span>
         </span>
         <ChevronsUpDown className='h-4 w-4 shrink-0 opacity-50' />
@@ -197,7 +215,10 @@ export function ApiKeyGroupCombobox({
                       </span>
                     )}
                   </span>
-                  <GroupRatioBadge ratio={option.ratio} />
+                  <span className='flex shrink-0 items-center gap-2'>
+                    {option.fusion && <FusionGroupBadge />}
+                    <GroupRatioBadge ratio={option.ratio} />
+                  </span>
                 </CommandItem>
               ))}
             </CommandGroup>
