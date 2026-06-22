@@ -43,6 +43,14 @@ func isPositiveOptionValue(value string) bool {
 	return err == nil && floatValue > 0
 }
 
+func validatePositiveIntegerOption(value string, label string) error {
+	intValue, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || intValue < 1 {
+		return fmt.Errorf("%s must be a positive integer", label)
+	}
+	return nil
+}
+
 func collectModelNamesFromOptionValue(raw string, modelNames map[string]struct{}) {
 	if strings.TrimSpace(raw) == "" {
 		return
@@ -406,6 +414,33 @@ func UpdateOption(c *gin.Context) {
 		}
 	case "fusion_setting.allowed_token_groups":
 		err = validateFusionAllowedTokenGroupsOption(option.Value.(string))
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "fusion_setting.stream_candidate_max_tokens":
+		err = validatePositiveIntegerOption(option.Value.(string), "fusion stream candidate max tokens")
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "fusion_setting.response_state_ttl_seconds":
+		err = validatePositiveIntegerOption(option.Value.(string), "fusion response state TTL seconds")
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "fusion_setting.response_state_max_payload_bytes":
+		err = validatePositiveIntegerOption(option.Value.(string), "fusion response state max payload bytes")
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,

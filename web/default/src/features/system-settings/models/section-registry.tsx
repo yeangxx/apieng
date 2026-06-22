@@ -94,6 +94,14 @@ const MODELS_SECTIONS = [
               settings['fusion_setting.max_judge_input_tokens'],
             max_candidate_output_chars:
               settings['fusion_setting.max_candidate_output_chars'],
+            stream_candidate_brief:
+              settings['fusion_setting.stream_candidate_brief'],
+            stream_candidate_max_tokens:
+              settings['fusion_setting.stream_candidate_max_tokens'],
+            response_state_ttl_seconds:
+              settings['fusion_setting.response_state_ttl_seconds'],
+            response_state_max_payload_bytes:
+              settings['fusion_setting.response_state_max_payload_bytes'],
             allow_private_base_url:
               settings['fusion_setting.allow_private_base_url'],
             allowed_base_url_domains:

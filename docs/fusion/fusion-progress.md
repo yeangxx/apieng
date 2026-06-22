@@ -8,10 +8,10 @@ This is the working progress board for the Fusion feature. Update this file afte
 |---|---|
 | Product/design scope | Ready |
 | Implementation plan | Ready |
-| Business code changes | Stage 14 agent upstream streaming resilience complete |
+| Business code changes | Stage 16 stream latency control complete |
 | Frontend changes | Stage 9 template/key test UI complete |
 | Security validation | Stage 7 focused tests passed; Codex Security diff scan complete with 0 unresolved findings |
-| Current next action | User live retest with Codex-style client, then tune Fusion timeout/model order if the upstream model itself remains slow |
+| Current next action | User live retest with `fusion:research-gpt`; if the first visible token is still slow, inspect candidate latency logs and reduce stream candidate max tokens or candidate count |
 
 Current source documents:
 
@@ -33,11 +33,13 @@ Fusion v1 builds a saved-config-only multi-model aggregation flow:
 - Key test/probe flow that can suggest per-key upstream JSON config without saving it automatically.
 - Agent tools passthrough for Codex/Claude Code style clients using first-success candidate tool-call selection.
 - Agent/tool candidate and Judge calls are consumed through internal OpenAI-compatible SSE when the request is stream/tool-like, while normal non-tool requests remain non-streaming upstream calls.
+- For external `stream=true` text turns, Fusion keeps the connection alive during the candidate phase and streams final Judge text deltas to the client once synthesis starts.
+- For pure text `stream=true` turns, Fusion can ask candidates for short briefs instead of full artifacts and can start Judge once `min_successes` is reached.
 - No direct free proxy using user-supplied API keys or base URLs.
 
 Fusion v1 intentionally does not include:
 
-- True incremental streaming aggregation. `stream=true` is accepted only as a final-result SSE compatibility layer with heartbeat keepalive while aggregation runs.
+- Candidate-token multiplexing. Candidate outputs are still collected before Judge synthesis, so no final answer text can be streamed during the candidate phase.
 - Realtime, image, audio, video, or task endpoints.
 - Direct single-call bring-your-own-key proxy.
 - Legacy `functions` / `function_call`.
@@ -50,7 +52,7 @@ Fusion v1 intentionally does not include:
 These decisions are binding for the first implementation pass:
 
 1. Only `strategy=synthesize` is executable. Save validation rejects other strategy values.
-2. `stream=true` is accepted only as a final-result SSE compatibility layer with heartbeat keepalive while aggregation runs; `tools` / `tool_choice` are passed through to candidates; `n>1`, legacy `functions`, and legacy `function_call` are rejected.
+2. `stream=true` opens SSE immediately, sends heartbeat keepalive during candidate aggregation, and streams final Judge text deltas after Judge synthesis starts; `tools` / `tool_choice` are passed through to candidates; `n>1`, legacy `functions`, and legacy `function_call` are rejected.
 3. Saved key direct relay is rejected. A saved key can only run through an enabled Fusion config after platform pre-consume succeeds.
 4. User request JSON cannot include raw `api_key`, `base_url`, `key_id`, candidate key IDs, or Judge key ID.
 5. `CRYPTO_SECRET` must be explicitly configured. `SessionSecret` fallback is not accepted for Fusion secret storage.
@@ -79,6 +81,8 @@ These decisions are binding for the first implementation pass:
 | 12 | Stream heartbeat keepalive | Complete | Stream clients receive early SSE headers and heartbeat comments while candidate/Judge aggregation is still running |
 | 13 | Agent tool observation loop | Complete | Responses `function_call` and `function_call_output` history is preserved when Fusion calls candidates |
 | 14 | Agent upstream streaming resilience | Complete | Tool/stream candidate and Judge calls use internal SSE parsing with first-response/idle timeout semantics |
+| 15 | External Judge streaming | Complete | External stream clients receive final Judge text deltas incrementally after candidate aggregation |
+| 16 | Stream latency control | Complete | Pure text stream requests stop waiting for extra candidates after min successes and cap candidate brief generation |
 
 ## Stage 0: Planning Baseline
 
@@ -267,7 +271,7 @@ Implemented behavior:
 - `service/fusion.go` runs saved-config-only Fusion execution with bounded parallel candidate calls and a Judge synthesis call.
 - Candidate and Judge calls use user-owned encrypted keys, re-check saved `base_url` against current Fusion SSRF policy, and do not use admin `Channel` distribution.
 - Redirect following is disabled for Fusion upstream calls; 3xx responses are treated as upstream failures.
-- `stream=true` is normalized to non-streaming upstream Fusion execution; modern tools/tool_choice pass through to candidate calls; legacy functions/function_call and `n>1` are still rejected in v1.
+- Current stream behavior is documented in Stage 15. Modern tools/tool_choice pass through to candidate calls; legacy functions/function_call and `n>1` are still rejected in v1.
 - Missing upstream usage falls back to conservative local token estimates.
 - Failed candidates keep estimated prompt tokens once an upstream request was attempted, so the failed-candidate billing policy can charge them later if enabled.
 - Candidate output is truncated before Judge prompt construction; Judge input is trimmed against the configured token cap.
@@ -315,7 +319,7 @@ Implemented behavior:
 - `/v1/fusion/chat/completions` is mounted under `TokenAuth`, `SystemPerformanceCheck`, `RouteTag("fusion")`, and `ModelRequestRateLimit`, without `middleware.Distribute()`.
 - Disabled Fusion and missing persistent `CRYPTO_SECRET` fail before raw body parsing, config lookup, key decryption, billing, or upstream calls.
 - Raw request JSON rejects direct upstream credential/routing fields before parsing into `dto.GeneralOpenAIRequest`.
-- V1 accepts `stream=true` as a final-result SSE compatibility layer, passes modern `tools` / `tool_choice` to candidate calls, and rejects unsupported chat fields: `n>1`, legacy `functions`, and legacy `function_call`.
+- V1 accepts `stream=true`, passes modern `tools` / `tool_choice` to candidate calls, and rejects unsupported chat fields: `n>1`, legacy `functions`, and legacy `function_call`. Current stream behavior is documented in Stage 15.
 - Token model limits are manually enforced against the Fusion alias because the route bypasses normal channel distribution.
 - The requested Fusion alias is set as `original_model` / `ContextKeyOriginalModel` before relay info and billing setup.
 - Platform service quota is pre-consumed before candidate or Judge calls, then settled or refunded through the existing `BillingSession` path.
@@ -543,11 +547,11 @@ Primary files:
 Completion criteria:
 
 - `POST /v1/chat/completions` with `model=fusion:xxx` and `stream=true` no longer fails only because of streaming.
-- Fusion still executes candidate and Judge upstream calls internally as non-streaming requests.
-- Chat stream clients receive an SSE-compatible final `chat.completion.chunk` followed by `[DONE]`.
+- Later stages upgraded stream execution: stream/tool-like candidate and Judge calls use upstream SSE when available.
+- Chat stream clients receive SSE chunks followed by `[DONE]`.
 - `POST /v1/responses` with `model=fusion:xxx` routes into billed Fusion execution while ordinary Responses requests continue through normal relay distribution.
 - Responses requests convert text `input`, string `instructions`, sampling fields, `max_output_tokens`, and `stream` into the internal Fusion chat request.
-- Responses stream clients receive final-result `response.output_text.delta` and `response.completed` SSE events.
+- Responses stream clients receive `response.output_text.delta` and `response.completed` SSE events.
 
 Validation result recorded on 2026-06-22:
 
@@ -670,6 +674,118 @@ Validation result recorded on 2026-06-22:
 go test ./service -run "FusionEngineAllowsActiveStreamBeyondConfiguredIdleTimeout|FusionEngineStreamsAgentCandidateToAvoidBodyTimeout|FusionEngineStreamsJudgeForExternalStreamRequest|FusionEngineParsesStreamingToolCallCandidate" -count=1: pass
 go test ./service ./controller -run "Fusion.*Tool|Fusion|Responses|FusionEngineStreams|FusionEngineParses" -count=1: pass
 go test ./model ./service ./controller ./router ./middleware -run "Fusion|Token|Distribute" -count=1: pass
+```
+
+## Stage 15: External Judge Streaming
+
+State: Complete
+
+Primary files:
+
+- `controller/fusion.go`
+- `controller/fusion_test.go`
+- `service/fusion.go`
+- `docs/fusion/*`
+
+Problem fixed:
+
+- Before this stage, external `stream=true` Fusion requests kept the SSE connection alive but waited for the full Fusion result, then wrote one final text chunk/event.
+- Pure text turns with slow candidates or a slow Judge could therefore appear as "no movement, then one big answer" in Codex-style clients even though the upstream Judge itself was capable of streaming.
+
+Completion criteria:
+
+- `prepareFusionRelay` preserves the external stream flag for Fusion execution.
+- `RunFusionEngineStreamFinal` still waits for candidate aggregation and tool-call selection, but streams final Judge text deltas through a callback.
+- Chat Completions stream responses write each Judge text delta as a separate `chat.completion.chunk`, followed by a stop chunk and `[DONE]`.
+- Responses stream responses write each Judge text delta as a separate `response.output_text.delta`, followed by the normal done/completed events.
+- Tool-call turns keep the existing first-success behavior and return the selected tool call without running Judge.
+- If an upstream stream opens but idles longer than `timeout_ms`, Fusion returns a stream error with `channel:response_time_exceeded`.
+
+Validation result recorded on 2026-06-22:
+
+```text
+go test ./service ./controller -run "Fusion.*Stream|ResponsesFusionStream|FusionEngineStreams|FusionEngineAllows|FusionEngineParses" -count=1: pass
+go test ./model ./service ./controller ./router ./middleware -run "Fusion|Token|Distribute" -count=1: pass
+git diff --check: pass
+```
+
+## Stage 16: Stream Latency Control
+
+State: Complete
+
+Primary files:
+
+- `service/fusion.go`
+- `service/fusion_test.go`
+- `setting/fusion_setting/fusion_setting.go`
+- `web/default/src/features/system-settings/models/fusion-settings-card.tsx`
+- `docs/fusion/*`
+
+Problem fixed:
+
+- Long artifact/code requests could make each candidate generate the full answer, then make Judge generate the full answer again.
+- Even with `min_successes=1`, stream execution previously waited for every configured candidate to complete before Judge started.
+- In live logs this produced multi-minute waits before the first visible final token, especially when one candidate generated thousands of tokens or hung until EOF.
+
+Completion criteria:
+
+- For pure text `stream=true` requests, candidate execution can return as soon as `min_successes` successful candidates complete.
+- Remaining candidate calls are canceled when early success is enough for Judge to start.
+- Tool-call requests and tool-observation turns keep the existing deterministic candidate-order behavior and do not use early candidate completion.
+- Stream candidate brief mode is enabled by default through `fusion_setting.stream_candidate_brief=true`.
+- Candidate brief calls prepend an internal system instruction asking candidates for concise briefs instead of final artifacts.
+- Candidate brief calls cap candidate generation with `fusion_setting.stream_candidate_max_tokens`, default `1024`.
+- Judge requests are not capped by the candidate brief setting and still generate the final answer.
+- The default frontend Fusion settings page exposes the brief-mode switch and token cap.
+
+Validation result recorded on 2026-06-22:
+
+```text
+go test ./service -run "TestFusionEngineStreamFinalStartsJudgeAfterMinSuccesses|TestFusionEngineStreamFinalUsesBriefCandidateRequests" -count=1: pass
+go test ./setting/fusion_setting ./service ./controller -run "Fusion.*Stream|ResponsesFusionStream|FusionEngineStreams|FusionEngineAllows|FusionEngineParses|FusionSetting" -count=1: pass
+git diff --check: pass
+```
+
+## Stage 17: Responses Tool Continuation State
+
+State: Complete
+
+Primary files:
+
+- `model/fusion_response_state.go`
+- `controller/fusion.go`
+- `controller/fusion_test.go`
+- `service/fusion.go`
+- `service/fusion_test.go`
+- `setting/fusion_setting/fusion_setting.go`
+- `web/default/src/features/system-settings/models/fusion-settings-card.tsx`
+- `docs/fusion/*`
+
+Problem fixed:
+
+- VS Code/Copilot/Codex-style clients can call `/v1/responses` with `previous_response_id` and only send the next `function_call_output`.
+- Before this stage, Fusion ignored `previous_response_id`, so candidate upstreams received a `role=tool` message without the prior assistant `tool_calls` and failed with errors such as `No tool call found for function call output`.
+
+Completion criteria:
+
+- Fusion persists encrypted `fusion_response_states` rows keyed by `response_id + user_id + token_id`.
+- The persisted payload stores normalized Chat messages, Responses output, and item id to canonical `call_id` mappings; it does not store API keys.
+- `/v1/responses` restores state before candidate execution when `previous_response_id` is present.
+- `function_call_output.call_id` values using either the Responses item id or the canonical call id are normalized before upstream candidate calls.
+- Stream responses save state before emitting `response.completed`; save failures emit `response.failed`.
+- Chat tool transcripts are validated before candidate execution, so missing assistant `tool_calls` fail in Fusion instead of as duplicated upstream 400s.
+- Admin settings expose `fusion_setting.response_state_ttl_seconds` and `fusion_setting.response_state_max_payload_bytes`.
+- Expired response states are deleted by a background cleanup task using only `expires_at < now`.
+
+Validation result recorded on 2026-06-22:
+
+```text
+go test ./model ./service ./controller ./setting/fusion_setting -run "Fusion.*Responses|Fusion.*Tool|FusionResponseState|FusionSetting|ValidateFusionChatRequest" -count=1: pass
+go test ./controller -run "ResponsesFusion.*(PreviousResponseID|ToolCallStream|ToolsReturns|PreservesFunctionCallOutput)|ResponsesFusionStream" -count=1: pass
+go test ./model ./service ./controller ./router ./middleware ./setting/fusion_setting -run "Fusion|Token|Distribute|FusionSetting|ValidateFusionChatRequest" -count=1: pass
+cd web/default && bun run typecheck: pass
+cd web/default && bun run build: pass
+git diff --check: pass
 ```
 
 ## Update Rules

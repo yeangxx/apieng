@@ -206,6 +206,10 @@ export type ModelSettings = {
   'fusion_setting.failed_candidate_quota': number
   'fusion_setting.max_judge_input_tokens': number
   'fusion_setting.max_candidate_output_chars': number
+  'fusion_setting.stream_candidate_brief': boolean
+  'fusion_setting.stream_candidate_max_tokens': number
+  'fusion_setting.response_state_ttl_seconds': number
+  'fusion_setting.response_state_max_payload_bytes': number
   'fusion_setting.allow_private_base_url': boolean
   'fusion_setting.allowed_base_url_domains': string
   'fusion_setting.allowed_base_url_ports': string

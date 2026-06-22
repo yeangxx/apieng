@@ -28,6 +28,10 @@ func TestFusionSettingDefaults(t *testing.T) {
 	assert.Equal(t, 1, GetFusionKeyTestQuota())
 	assert.Equal(t, 128000, GetFusionMaxJudgeInputTokens())
 	assert.Equal(t, 20000, GetFusionMaxCandidateOutputChars())
+	assert.True(t, ShouldFusionUseStreamCandidateBrief())
+	assert.Equal(t, 1024, GetFusionStreamCandidateMaxTokens())
+	assert.Equal(t, 86400, GetFusionResponseStateTTLSeconds())
+	assert.Equal(t, 2097152, GetFusionResponseStateMaxPayloadBytes())
 	assert.False(t, IsFusionPrivateBaseURLAllowed())
 	assert.Equal(t, []string{}, GetFusionAllowedBaseURLDomains())
 	assert.Equal(t, []int{443}, GetFusionAllowedBaseURLPorts())
@@ -40,13 +44,17 @@ func TestFusionSettingLoadFromDB(t *testing.T) {
 	t.Cleanup(resetFusionSettingForTest)
 
 	err := config.GlobalConfig.LoadFromDB(map[string]string{
-		"fusion_setting.enabled":                  "true",
-		"fusion_setting.max_keys_per_user":        "20",
-		"fusion_setting.billing_expr":             "max(min_quota, cp + jp + failed * failed_quota)",
-		"fusion_setting.charge_failed_candidates": "true",
-		"fusion_setting.allowed_base_url_domains": `["example.com","*.example.org"]`,
-		"fusion_setting.allowed_base_url_ports":   `[443,8443]`,
-		"fusion_setting.allowed_token_groups":     `["fusion-basic","fusion-pro"]`,
+		"fusion_setting.enabled":                          "true",
+		"fusion_setting.max_keys_per_user":                "20",
+		"fusion_setting.billing_expr":                     "max(min_quota, cp + jp + failed * failed_quota)",
+		"fusion_setting.charge_failed_candidates":         "true",
+		"fusion_setting.stream_candidate_brief":           "false",
+		"fusion_setting.stream_candidate_max_tokens":      "384",
+		"fusion_setting.response_state_ttl_seconds":       "3600",
+		"fusion_setting.response_state_max_payload_bytes": "1048576",
+		"fusion_setting.allowed_base_url_domains":         `["example.com","*.example.org"]`,
+		"fusion_setting.allowed_base_url_ports":           `[443,8443]`,
+		"fusion_setting.allowed_token_groups":             `["fusion-basic","fusion-pro"]`,
 	})
 
 	require.NoError(t, err)
@@ -54,6 +62,10 @@ func TestFusionSettingLoadFromDB(t *testing.T) {
 	assert.Equal(t, 20, GetFusionMaxKeysPerUser())
 	assert.Equal(t, "max(min_quota, cp + jp + failed * failed_quota)", GetFusionBillingExpr())
 	assert.True(t, ShouldFusionChargeFailedCandidates())
+	assert.False(t, ShouldFusionUseStreamCandidateBrief())
+	assert.Equal(t, 384, GetFusionStreamCandidateMaxTokens())
+	assert.Equal(t, 3600, GetFusionResponseStateTTLSeconds())
+	assert.Equal(t, 1048576, GetFusionResponseStateMaxPayloadBytes())
 	assert.Equal(t, []string{"example.com", "*.example.org"}, GetFusionAllowedBaseURLDomains())
 	assert.Equal(t, []int{443, 8443}, GetFusionAllowedBaseURLPorts())
 	assert.Equal(t, []string{"fusion-basic", "fusion-pro"}, GetFusionAllowedTokenGroups())

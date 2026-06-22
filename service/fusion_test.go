@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,7 +56,7 @@ func setupFusionServiceTestDB(t *testing.T) {
 	require.NoError(t, err)
 	model.DB = db
 	model.LOG_DB = db
-	require.NoError(t, db.AutoMigrate(&model.FusionUpstreamTemplate{}, &model.FusionAPIKey{}, &model.FusionConfig{}))
+	require.NoError(t, db.AutoMigrate(&model.FusionUpstreamTemplate{}, &model.FusionAPIKey{}, &model.FusionConfig{}, &model.FusionResponseState{}))
 	t.Cleanup(func() {
 		sqlDB, err := db.DB()
 		if err == nil {
@@ -105,6 +106,50 @@ func newFusionTestTLSServer(t *testing.T, responses map[string]dto.OpenAITextRes
 		_, _ = w.Write(data)
 	}))
 	return server, state
+}
+
+func TestValidateFusionChatRequestRejectsMissingToolCallHistory(t *testing.T) {
+	request := &dto.GeneralOpenAIRequest{
+		Model: "fusion:research",
+		Messages: []dto.Message{
+			{
+				Role:       "tool",
+				ToolCallId: "call_read",
+				Content:    "file content",
+			},
+		},
+	}
+
+	err := validateFusionChatRequest(request)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing tool call id")
+}
+
+func TestValidateFusionChatRequestAcceptsToolCallHistory(t *testing.T) {
+	assistant := dto.Message{
+		Role:    "assistant",
+		Content: "",
+	}
+	assistant.SetToolCalls([]dto.ToolCallResponse{
+		{
+			ID:   "call_read",
+			Type: "function",
+			Function: dto.FunctionResponse{
+				Name:      "read_file",
+				Arguments: `{"path":"main.go"}`,
+			},
+		},
+	})
+	request := &dto.GeneralOpenAIRequest{
+		Model: "fusion:research",
+		Messages: []dto.Message{
+			{Role: "user", Content: "read file"},
+			assistant,
+			{Role: "tool", ToolCallId: "call_read", Content: "file content"},
+		},
+	}
+
+	require.NoError(t, validateFusionChatRequest(request))
 }
 
 func configureFusionServiceTestBaseURL(t *testing.T, serverURL string, extra map[string]string) {
@@ -779,6 +824,166 @@ func TestFusionEngineStreamsJudgeForExternalStreamRequest(t *testing.T) {
 	require.NotNil(t, state.modelBodies["judge-model"][0].Stream)
 	assert.True(t, *state.modelBodies["candidate-a"][0].Stream)
 	assert.True(t, *state.modelBodies["judge-model"][0].Stream)
+}
+
+func TestFusionEngineStreamFinalStartsJudgeAfterMinSuccesses(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	server, state := newFusionTestTLSServer(t, nil, nil)
+	var slowCandidateCanceled atomic.Bool
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer sk-fusion-test", r.Header.Get("Authorization"))
+		var req dto.GeneralOpenAIRequest
+		require.NoError(t, common.DecodeJson(r.Body, &req))
+		state.mu.Lock()
+		state.modelCalls[req.Model]++
+		state.modelBodies[req.Model] = append(state.modelBodies[req.Model], req)
+		state.mu.Unlock()
+		require.NotNil(t, req.Stream)
+		require.True(t, *req.Stream)
+
+		if req.Model == "candidate-slow" {
+			<-r.Context().Done()
+			slowCandidateCanceled.Store(true)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		content := "fast candidate"
+		if req.Model == "judge-model" {
+			content = "streamed final"
+		}
+		writeFusionTestStreamChunk(t, w, gin.H{
+			"id":      "chatcmpl-min-success-test",
+			"object":  "chat.completion.chunk",
+			"created": common.GetTimestamp(),
+			"model":   req.Model,
+			"choices": []gin.H{{"index": 0, "delta": gin.H{"role": "assistant", "content": content}, "finish_reason": nil}},
+		})
+		writeFusionTestStreamChunk(t, w, gin.H{
+			"id":      "chatcmpl-min-success-test",
+			"object":  "chat.completion.chunk",
+			"created": common.GetTimestamp(),
+			"model":   req.Model,
+			"choices": []gin.H{{"index": 0, "delta": gin.H{}, "finish_reason": "stop"}},
+			"usage": gin.H{
+				"prompt_tokens":     10,
+				"completion_tokens": 2,
+				"total_tokens":      12,
+			},
+		})
+		writeFusionTestStreamDone(t, w)
+	})
+	defer server.Close()
+	configureFusionServiceTestBaseURL(t, server.URL, nil)
+
+	fastKey := createFusionServiceKey(t, 1, "fast", server.URL+"/v1", "candidate-fast")
+	slowKey := createFusionServiceKey(t, 1, "slow", server.URL+"/v1", "candidate-slow")
+	judgeKey := createFusionServiceKey(t, 1, "judge", server.URL+"/v1", "judge-model")
+	fusionConfig := createFusionServiceConfig(t, 1, []int{fastKey.Id, slowKey.Id}, judgeKey.Id, "judge-model", 1)
+	fusionConfig.TimeoutMS = 5000
+	require.NoError(t, model.DB.Model(fusionConfig).Update("timeout_ms", fusionConfig.TimeoutMS).Error)
+	request := fusionEngineTestRequest(fusionConfig, server.Client())
+	request.Request.Stream = common.GetPointer(true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	var deltas []string
+	result, err := RunFusionEngineStreamFinal(ctx, request, FusionStreamCallbacks{
+		OnTextDelta: func(delta string) error {
+			deltas = append(deltas, delta)
+			return nil
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "streamed final", result.Content)
+	assert.Equal(t, []string{"streamed final"}, deltas)
+	require.Len(t, result.Candidates, 1)
+	assert.Equal(t, "candidate-fast", result.Candidates[0].Model)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	assert.Equal(t, 1, state.modelCalls["candidate-fast"])
+	assert.Equal(t, 1, state.modelCalls["candidate-slow"])
+	assert.Equal(t, 1, state.modelCalls["judge-model"])
+	assert.True(t, slowCandidateCanceled.Load())
+}
+
+func TestFusionEngineStreamFinalUsesBriefCandidateRequests(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	server, state := newFusionTestTLSServer(t, nil, nil)
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer sk-fusion-test", r.Header.Get("Authorization"))
+		var req dto.GeneralOpenAIRequest
+		require.NoError(t, common.DecodeJson(r.Body, &req))
+		state.mu.Lock()
+		state.modelCalls[req.Model]++
+		state.modelBodies[req.Model] = append(state.modelBodies[req.Model], req)
+		state.mu.Unlock()
+		require.NotNil(t, req.Stream)
+		require.True(t, *req.Stream)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		content := "candidate brief"
+		if req.Model == "judge-model" {
+			content = "streamed final html"
+		}
+		writeFusionTestStreamChunk(t, w, gin.H{
+			"id":      "chatcmpl-brief-test",
+			"object":  "chat.completion.chunk",
+			"created": common.GetTimestamp(),
+			"model":   req.Model,
+			"choices": []gin.H{{"index": 0, "delta": gin.H{"role": "assistant", "content": content}, "finish_reason": nil}},
+		})
+		writeFusionTestStreamChunk(t, w, gin.H{
+			"id":      "chatcmpl-brief-test",
+			"object":  "chat.completion.chunk",
+			"created": common.GetTimestamp(),
+			"model":   req.Model,
+			"choices": []gin.H{{"index": 0, "delta": gin.H{}, "finish_reason": "stop"}},
+			"usage": gin.H{
+				"prompt_tokens":     10,
+				"completion_tokens": 2,
+				"total_tokens":      12,
+			},
+		})
+		writeFusionTestStreamDone(t, w)
+	})
+	defer server.Close()
+	configureFusionServiceTestBaseURL(t, server.URL, map[string]string{
+		"fusion_setting.stream_candidate_brief":      "true",
+		"fusion_setting.stream_candidate_max_tokens": "384",
+	})
+
+	candidateKey := createFusionServiceKey(t, 1, "candidate", server.URL+"/v1", "candidate-a")
+	judgeKey := createFusionServiceKey(t, 1, "judge", server.URL+"/v1", "judge-model")
+	fusionConfig := createFusionServiceConfig(t, 1, []int{candidateKey.Id}, judgeKey.Id, "judge-model", 1)
+	request := fusionEngineTestRequest(fusionConfig, server.Client())
+	request.Request.Stream = common.GetPointer(true)
+	request.Request.Messages = []dto.Message{
+		{Role: "user", Content: "Create a complete HTML landing page."},
+	}
+
+	result, err := RunFusionEngineStreamFinal(context.Background(), request, FusionStreamCallbacks{})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "streamed final html", result.Content)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	require.Len(t, state.modelBodies["candidate-a"], 1)
+	candidateRequest := state.modelBodies["candidate-a"][0]
+	require.NotEmpty(t, candidateRequest.Messages)
+	assert.Equal(t, "system", candidateRequest.Messages[0].Role)
+	assert.Contains(t, candidateRequest.Messages[0].StringContent(), "Fusion candidate brief")
+	require.NotNil(t, candidateRequest.MaxTokens)
+	assert.Equal(t, uint(384), *candidateRequest.MaxTokens)
+
+	require.Len(t, state.modelBodies["judge-model"], 1)
+	judgeRequest := state.modelBodies["judge-model"][0]
+	require.NotEmpty(t, judgeRequest.Messages)
+	assert.NotContains(t, judgeRequest.Messages[0].StringContent(), "Fusion candidate brief")
+	assert.Nil(t, judgeRequest.MaxTokens)
 }
 
 func TestFusionEngineParsesStreamingToolCallCandidate(t *testing.T) {

@@ -28,6 +28,10 @@ fusion_setting.minimum_quota=1
 fusion_setting.billing_expr=max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 + failed * failed_quota)
 fusion_setting.charge_failed_candidates=false
 fusion_setting.failed_candidate_quota=0
+fusion_setting.stream_candidate_brief=true
+fusion_setting.stream_candidate_max_tokens=1024
+fusion_setting.response_state_ttl_seconds=86400
+fusion_setting.response_state_max_payload_bytes=2097152
 fusion_setting.allow_private_base_url=false
 fusion_setting.allowed_base_url_ports=443
 ```
@@ -88,10 +92,12 @@ Supported in the MVP:
 - Saved Fusion configs selected by model alias, such as `fusion:research`.
 - `strategy=synthesize`.
 - Non-streaming OpenAI-compatible chat completions.
-- OpenAI-compatible `stream=true` final-result SSE wrapping for chat completions, with heartbeat comments while aggregation runs.
-- OpenAI Responses text compatibility through `POST /v1/responses`, including final-result SSE wrapping and heartbeat comments when `stream=true`.
+- OpenAI-compatible `stream=true` SSE for chat completions, with heartbeat comments during candidate aggregation and incremental final Judge text deltas once synthesis starts.
+- OpenAI Responses text compatibility through `POST /v1/responses`, including heartbeat comments during candidate aggregation and incremental `response.output_text.delta` events for final Judge text when `stream=true`.
+- Stream latency controls for pure text turns: candidates can return short briefs, candidate generation is capped, and Judge can start once `min_successes` is reached.
 - Modern agent `tools` / `tool_choice` passthrough with first-success candidate `tool_calls` returned to the client.
-- Responses agent tool-loop history preservation: previous `function_call` and `function_call_output` input items are converted to internal chat `assistant.tool_calls` and `role=tool` messages with matching `call_id` before candidate calls.
+- Responses agent tool-loop history preservation: `previous_response_id` restores encrypted Fusion response state, then current `function_call_output` items are converted to internal chat `role=tool` messages with matching canonical `call_id` before candidate calls.
+- Chat Completions agent clients must send complete tool history themselves; Fusion rejects orphan `role=tool` messages before upstream calls.
 - Internal upstream SSE for agent-like calls: stream/tool candidate and Judge requests use `stream=true` upstream where applicable, and Fusion reconstructs text/tool calls before applying the existing selection/Judge flow. In this path `timeout_ms` is the first-response / idle timeout; active streams may run longer if they keep producing events.
 - Admin-configured service billing expression.
 - Failed-candidate billing policy.
@@ -99,8 +105,7 @@ Supported in the MVP:
 
 Rejected or not implemented in the MVP:
 
-- True incremental streaming aggregation. Current `stream=true` support keeps the connection alive and returns the final result, but does not stream candidate or Judge tokens incrementally.
-- Streaming Judge synthesis to the client.
+- Candidate-token multiplexing. Candidate outputs are collected before Judge synthesis, so final answer text cannot be streamed during the candidate phase.
 - Judge-based tool-call arbitration.
 - Fusion-side tool execution. Agent clients remain responsible for executing returned tool calls and sending the tool result back on the next turn.
 - Legacy `functions` / `function_call`.
@@ -128,7 +133,11 @@ The relay endpoint itself is separate from these test endpoints and is implement
 Last recorded Fusion-focused validation:
 
 ```powershell
-go test ./controller ./router ./service ./model ./common -run Fusion -count=1
+go test ./model ./service ./controller ./router ./middleware ./setting/fusion_setting -run "Fusion|Token|Distribute|FusionSetting|ValidateFusionChatRequest" -count=1
+cd web/default
+bun run typecheck
+bun run build
+git diff --check
 ```
 
 Result:
@@ -179,8 +188,10 @@ This can fail on existing non-Fusion lint debt outside the Fusion change set. St
 7. Confirm the default `OpenAI Compatible` Fusion upstream template exists or create the intended upstream templates in the admin UI.
 8. Run a controlled fake-upstream or staging upstream smoke for `/v1/chat/completions` and `/v1/responses` with `model=fusion:xxx`, including `stream=true` clients.
 9. Set each Fusion config `MaxParallel` according to expected latency and upstream rate limits. `MaxParallel=1` runs candidate calls serially and can make agent clients feel slow.
-10. Enable `fusion_setting.enabled=true` for a limited user group or controlled rollout.
-11. Monitor consume logs with `other.fusion=true` and `channel_id=0`.
+10. For code or HTML generation workloads, keep `fusion_setting.stream_candidate_brief=true` and reduce `fusion_setting.stream_candidate_max_tokens` if the first visible final token is still too slow.
+11. Keep `fusion_setting.response_state_ttl_seconds` long enough for expected agent tool loops, and keep `fusion_setting.response_state_max_payload_bytes` bounded for database safety.
+12. Enable `fusion_setting.enabled=true` for a limited user group or controlled rollout.
+13. Monitor consume logs with `other.fusion=true` and `channel_id=0`.
 
 ## Rollback
 

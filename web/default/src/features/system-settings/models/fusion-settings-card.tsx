@@ -94,6 +94,10 @@ const fusionSettingsSchema = z.object({
     failed_candidate_quota: z.coerce.number().int().min(0),
     max_judge_input_tokens: z.coerce.number().int().min(1),
     max_candidate_output_chars: z.coerce.number().int().min(1),
+    stream_candidate_brief: z.boolean(),
+    stream_candidate_max_tokens: z.coerce.number().int().min(1),
+    response_state_ttl_seconds: z.coerce.number().int().min(1),
+    response_state_max_payload_bytes: z.coerce.number().int().min(1),
     allow_private_base_url: z.boolean(),
     allowed_base_url_domains: jsonStringArray,
     allowed_base_url_ports: jsonNumberArray,
@@ -120,6 +124,10 @@ type FlatFusionSettings = {
   'fusion_setting.failed_candidate_quota': number
   'fusion_setting.max_judge_input_tokens': number
   'fusion_setting.max_candidate_output_chars': number
+  'fusion_setting.stream_candidate_brief': boolean
+  'fusion_setting.stream_candidate_max_tokens': number
+  'fusion_setting.response_state_ttl_seconds': number
+  'fusion_setting.response_state_max_payload_bytes': number
   'fusion_setting.allow_private_base_url': boolean
   'fusion_setting.allowed_base_url_domains': string
   'fusion_setting.allowed_base_url_ports': string
@@ -171,6 +179,13 @@ function flattenFusionSettings(
     'fusion_setting.max_judge_input_tokens': settings.max_judge_input_tokens,
     'fusion_setting.max_candidate_output_chars':
       settings.max_candidate_output_chars,
+    'fusion_setting.stream_candidate_brief': settings.stream_candidate_brief,
+    'fusion_setting.stream_candidate_max_tokens':
+      settings.stream_candidate_max_tokens,
+    'fusion_setting.response_state_ttl_seconds':
+      settings.response_state_ttl_seconds,
+    'fusion_setting.response_state_max_payload_bytes':
+      settings.response_state_max_payload_bytes,
     'fusion_setting.allow_private_base_url': settings.allow_private_base_url,
     'fusion_setting.allowed_base_url_domains': normalizeJsonText(
       settings.allowed_base_url_domains,
@@ -442,6 +457,29 @@ export function FusionSettingsCard(props: FusionSettingsCardProps) {
             )}
           />
 
+          <FormField
+            control={form.control}
+            name='fusion_setting.stream_candidate_brief'
+            render={({ field }) => (
+              <SettingsSwitchItem>
+                <SettingsSwitchContent>
+                  <FormLabel>{t('Stream Candidate Brief Mode')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      'For text streaming Fusion calls, ask candidates for short briefs and let Judge generate the final answer.'
+                    )}
+                  </FormDescription>
+                </SettingsSwitchContent>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </SettingsSwitchItem>
+            )}
+          />
+
           <div className='grid gap-4 lg:col-span-2 lg:grid-cols-4'>
             <FormField
               control={form.control}
@@ -578,6 +616,60 @@ export function FusionSettingsCard(props: FusionSettingsCardProps) {
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>{t('Max Candidate Output Chars')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      value={Number(field.value ?? 0)}
+                      type='number'
+                      min={1}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='fusion_setting.stream_candidate_max_tokens'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Stream Candidate Max Tokens')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      value={Number(field.value ?? 0)}
+                      type='number'
+                      min={1}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='fusion_setting.response_state_ttl_seconds'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Response State TTL (s)')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      value={Number(field.value ?? 0)}
+                      type='number'
+                      min={1}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='fusion_setting.response_state_max_payload_bytes'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Response State Max Bytes')}</FormLabel>
                   <FormControl>
                     <Input
                       {...field}

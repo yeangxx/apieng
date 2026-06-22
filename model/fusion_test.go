@@ -3,8 +3,10 @@ package model
 import (
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,7 +26,7 @@ func setupFusionModelTestDB(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	DB = db
-	require.NoError(t, DB.AutoMigrate(&FusionUpstreamTemplate{}, &FusionAPIKey{}, &FusionConfig{}))
+	require.NoError(t, DB.AutoMigrate(&FusionUpstreamTemplate{}, &FusionAPIKey{}, &FusionConfig{}, &FusionResponseState{}))
 
 	common.CryptoSecret = "test-secret-with-enough-entropy"
 	common.PersistentCryptoSecretConfigured = true
@@ -45,6 +47,79 @@ func createFusionTestKey(t *testing.T, userId int, name string, models []string)
 	key.Normalize()
 	require.NoError(t, DB.Create(key).Error)
 	return key
+}
+
+func TestFusionResponseStateSaveLoadAndScope(t *testing.T) {
+	setupFusionModelTestDB(t)
+	message := dto.Message{
+		Role:    "user",
+		Content: "read file",
+	}
+	payload := FusionResponseStatePayload{
+		Messages: []dto.Message{message},
+		Outputs: []dto.ResponsesOutput{
+			{
+				Type:   "function_call",
+				ID:     "fc_read",
+				CallId: "call_read",
+				Name:   "read_file",
+			},
+		},
+		CallIDByItemID: map[string]string{"fc_read": "call_read"},
+	}
+	state := &FusionResponseState{
+		ResponseID:       "resp_test",
+		UserID:           1,
+		TokenID:          10,
+		ModelAlias:       "fusion:research",
+		ParentResponseID: "",
+		ExpiresAt:        time.Now().Add(time.Hour).Unix(),
+	}
+	require.NoError(t, state.SetStatePayload(payload))
+	require.NoError(t, state.Insert())
+	assert.NotContains(t, state.StateCiphertext, "read file")
+
+	loaded, err := GetFusionResponseState("resp_test", 1, 10)
+	require.NoError(t, err)
+	loadedPayload, err := loaded.GetStatePayload()
+	require.NoError(t, err)
+	require.Len(t, loadedPayload.Messages, 1)
+	assert.Equal(t, "read file", loadedPayload.Messages[0].StringContent())
+	assert.Equal(t, "call_read", loadedPayload.CallIDByItemID["fc_read"])
+
+	_, err = GetFusionResponseState("resp_test", 1, 11)
+	require.Error(t, err)
+}
+
+func TestFusionResponseStateExpiryCleanup(t *testing.T) {
+	setupFusionModelTestDB(t)
+	expired := &FusionResponseState{
+		ResponseID: "resp_expired",
+		UserID:     1,
+		TokenID:    10,
+		ModelAlias: "fusion:research",
+		ExpiresAt:  time.Now().Add(-time.Hour).Unix(),
+	}
+	require.NoError(t, expired.SetStatePayload(FusionResponseStatePayload{Messages: []dto.Message{{Role: "user", Content: "old"}}}))
+	require.NoError(t, expired.Insert())
+	active := &FusionResponseState{
+		ResponseID: "resp_active",
+		UserID:     1,
+		TokenID:    10,
+		ModelAlias: "fusion:research",
+		ExpiresAt:  time.Now().Add(time.Hour).Unix(),
+	}
+	require.NoError(t, active.SetStatePayload(FusionResponseStatePayload{Messages: []dto.Message{{Role: "user", Content: "new"}}}))
+	require.NoError(t, active.Insert())
+
+	_, err := GetFusionResponseState("resp_expired", 1, 10)
+	require.Error(t, err)
+	deleted, err := DeleteExpiredFusionResponseStates(time.Now().Unix())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), deleted)
+
+	_, err = GetFusionResponseState("resp_active", 1, 10)
+	require.NoError(t, err)
 }
 
 func createFusionTestConfig(t *testing.T, userId int, candidateKeyIDs []int, judgeKeyID int, candidateModels map[string]string, judgeModel string) *FusionConfig {

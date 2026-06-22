@@ -32,6 +32,14 @@ const (
 
 var fusionStreamPingInterval = 5 * time.Second
 
+var errFusionResponseStateUnavailable = errors.New("Fusion previous_response_id state not found or expired")
+
+type fusionResponsesPreparedRequest struct {
+	ChatRequest      *dto.GeneralOpenAIRequest
+	ParentResponseID string
+	Messages         []dto.Message
+}
+
 var fusionDirectRequestFields = map[string]struct{}{
 	"api_key":           {},
 	"base_url":          {},
@@ -397,7 +405,72 @@ func writeFusionChatCompletionStream(c *gin.Context, modelAlias string, result *
 	helper.Done(c)
 }
 
-func buildFusionResponsesResponse(modelAlias string, result *service.FusionEngineResult) dto.OpenAIResponsesResponse {
+func writeFusionChatCompletionDelta(c *gin.Context, streamID string, created int64, modelAlias string, delta string, includeRole bool) {
+	if delta == "" {
+		return
+	}
+	responseDelta := dto.ChatCompletionsStreamResponseChoiceDelta{}
+	responseDelta.SetContentString(delta)
+	if includeRole {
+		responseDelta.Role = "assistant"
+	}
+	chunk := dto.ChatCompletionsStreamResponse{
+		Id:      streamID,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   modelAlias,
+		Choices: []dto.ChatCompletionsStreamResponseChoice{
+			{
+				Index: 0,
+				Delta: responseDelta,
+			},
+		},
+	}
+	_ = helper.ObjectData(c, chunk)
+}
+
+func writeFusionChatCompletionStop(c *gin.Context, streamID string, created int64, modelAlias string, result *service.FusionEngineResult) {
+	finishReason := "stop"
+	if result != nil && result.Judge.FinishReason != "" {
+		finishReason = result.Judge.FinishReason
+	}
+	chunk := dto.ChatCompletionsStreamResponse{
+		Id:      streamID,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   modelAlias,
+		Choices: []dto.ChatCompletionsStreamResponseChoice{
+			{
+				Index:        0,
+				Delta:        dto.ChatCompletionsStreamResponseChoiceDelta{},
+				FinishReason: &finishReason,
+			},
+		},
+	}
+	if result != nil {
+		chunk.Usage = &result.Usage
+	}
+	_ = helper.ObjectData(c, chunk)
+	helper.Done(c)
+}
+
+func newFusionResponseID() string {
+	return "resp_fusion_" + common.GetRandomString(12)
+}
+
+func fusionResponsesRawString(value string) []byte {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	data, _ := common.Marshal(value)
+	return data
+}
+
+func buildFusionResponsesResponse(modelAlias string, responseID string, parentResponseID string, result *service.FusionEngineResult) dto.OpenAIResponsesResponse {
+	if strings.TrimSpace(responseID) == "" {
+		responseID = newFusionResponseID()
+	}
 	status, _ := common.Marshal("completed")
 	output := []dto.ResponsesOutput{
 		{
@@ -418,14 +491,15 @@ func buildFusionResponsesResponse(modelAlias string, result *service.FusionEngin
 		output = fusionResponsesToolCallOutputs(result.ToolCalls)
 	}
 	return dto.OpenAIResponsesResponse{
-		ID:                "resp_fusion_" + common.GetRandomString(12),
-		Object:            "response",
-		CreatedAt:         int(common.GetTimestamp()),
-		Status:            status,
-		Model:             modelAlias,
-		Output:            output,
-		ParallelToolCalls: true,
-		Store:             false,
+		ID:                 responseID,
+		Object:             "response",
+		CreatedAt:          int(common.GetTimestamp()),
+		Status:             status,
+		Model:              modelAlias,
+		Output:             output,
+		ParallelToolCalls:  true,
+		PreviousResponseID: fusionResponsesRawString(parentResponseID),
+		Store:              false,
 		Usage: &dto.Usage{
 			InputTokens:        result.Usage.PromptTokens,
 			OutputTokens:       result.Usage.CompletionTokens,
@@ -454,7 +528,141 @@ func fusionResponsesToolCallOutputs(toolCalls []dto.ToolCallResponse) []dto.Resp
 	return output
 }
 
-func writeFusionResponsesStream(c *gin.Context, modelAlias string, result *service.FusionEngineResult) {
+func fusionResponsesCallIDVariants(id string) []string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	if strings.HasPrefix(id, "call_") {
+		return []string{"fc_" + strings.TrimPrefix(id, "call_")}
+	}
+	if strings.HasPrefix(id, "fc_") {
+		return []string{"call_" + strings.TrimPrefix(id, "fc_")}
+	}
+	return nil
+}
+
+func addFusionResponseCallIDMapping(mapping map[string]string, itemID string, callID string) {
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		return
+	}
+	mapping[callID] = callID
+	for _, variant := range fusionResponsesCallIDVariants(callID) {
+		mapping[variant] = callID
+	}
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return
+	}
+	mapping[itemID] = callID
+	for _, variant := range fusionResponsesCallIDVariants(itemID) {
+		mapping[variant] = callID
+	}
+}
+
+func fusionResponsesCallIDMappings(output []dto.ResponsesOutput) map[string]string {
+	mapping := make(map[string]string)
+	for _, item := range output {
+		if item.Type != "function_call" {
+			continue
+		}
+		callID := strings.TrimSpace(item.CallId)
+		if callID == "" {
+			callID = strings.TrimSpace(item.ID)
+		}
+		addFusionResponseCallIDMapping(mapping, item.ID, callID)
+	}
+	return mapping
+}
+
+func fusionResponsesAssistantMessageFromOutput(output []dto.ResponsesOutput) (dto.Message, bool) {
+	toolCalls := make([]dto.ToolCallResponse, 0)
+	texts := make([]string, 0)
+	for _, item := range output {
+		switch item.Type {
+		case "function_call":
+			callID := strings.TrimSpace(item.CallId)
+			if callID == "" {
+				callID = strings.TrimSpace(item.ID)
+			}
+			if callID == "" || strings.TrimSpace(item.Name) == "" {
+				continue
+			}
+			toolCalls = append(toolCalls, dto.ToolCallResponse{
+				ID:   callID,
+				Type: "function",
+				Function: dto.FunctionResponse{
+					Name:      item.Name,
+					Arguments: item.ArgumentsString(),
+				},
+			})
+		case "message":
+			for _, content := range item.Content {
+				if content.Type == "output_text" && strings.TrimSpace(content.Text) != "" {
+					texts = append(texts, content.Text)
+				}
+			}
+		}
+	}
+	if len(toolCalls) > 0 {
+		message := dto.Message{
+			Role:    "assistant",
+			Content: "",
+		}
+		message.SetToolCalls(toolCalls)
+		return message, true
+	}
+	if len(texts) > 0 {
+		return dto.Message{
+			Role:    "assistant",
+			Content: strings.Join(texts, "\n"),
+		}, true
+	}
+	return dto.Message{}, false
+}
+
+func saveFusionResponseState(c *gin.Context, modelAlias string, responseID string, parentResponseID string, messages []dto.Message, output []dto.ResponsesOutput) error {
+	stateMessages := append([]dto.Message{}, messages...)
+	if assistantMessage, ok := fusionResponsesAssistantMessageFromOutput(output); ok {
+		stateMessages = append(stateMessages, assistantMessage)
+	}
+	payload := model.FusionResponseStatePayload{
+		Messages:       stateMessages,
+		Outputs:        append([]dto.ResponsesOutput{}, output...),
+		CallIDByItemID: fusionResponsesCallIDMappings(output),
+	}
+	payloadData, err := common.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	maxPayloadBytes := fusion_setting.GetFusionResponseStateMaxPayloadBytes()
+	if maxPayloadBytes > 0 && len(payloadData) > maxPayloadBytes {
+		return fmt.Errorf("fusion response state payload exceeds limit: %d > %d bytes", len(payloadData), maxPayloadBytes)
+	}
+	ttlSeconds := fusion_setting.GetFusionResponseStateTTLSeconds()
+	if ttlSeconds <= 0 {
+		ttlSeconds = 86400
+	}
+	state := &model.FusionResponseState{
+		ResponseID:       responseID,
+		UserID:           c.GetInt("id"),
+		TokenID:          c.GetInt("token_id"),
+		ModelAlias:       modelAlias,
+		ParentResponseID: parentResponseID,
+		ExpiresAt:        time.Now().Add(time.Duration(ttlSeconds) * time.Second).Unix(),
+	}
+	if err := state.SetStatePayload(payload); err != nil {
+		return err
+	}
+	return state.Insert()
+}
+
+func fusionResponseStateNewAPIError(err error) *types.NewAPIError {
+	return types.NewErrorWithStatusCode(err, types.ErrorCodeBadResponse, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
+}
+
+func writeFusionResponsesStream(c *gin.Context, modelAlias string, result *service.FusionEngineResult, stateContext fusionResponsesPreparedRequest) bool {
 	helper.SetEventStreamHeaders(c)
 	sequenceNumber := 0
 	writeEvent := func(eventType string, event dto.ResponsesStreamResponse) {
@@ -462,7 +670,8 @@ func writeFusionResponsesStream(c *gin.Context, modelAlias string, result *servi
 		event.SequenceNumber = &sequenceNumber
 		writeFusionResponsesStreamEvent(c, eventType, event)
 	}
-	response := buildFusionResponsesResponse(modelAlias, result)
+	responseID := newFusionResponseID()
+	response := buildFusionResponsesResponse(modelAlias, responseID, stateContext.ParentResponseID, result)
 	writeEvent("response.created", dto.ResponsesStreamResponse{Response: &response})
 	writeEvent("response.in_progress", dto.ResponsesStreamResponse{Response: &response})
 	if len(result.ToolCalls) > 0 {
@@ -490,14 +699,22 @@ func writeFusionResponsesStream(c *gin.Context, modelAlias string, result *servi
 				OutputIndex: &outputIndex,
 			})
 		}
+		if err := saveFusionResponseState(c, modelAlias, response.ID, stateContext.ParentResponseID, stateContext.Messages, response.Output); err != nil {
+			writeFusionResponsesStreamError(c, modelAlias, fusionResponseStateNewAPIError(err))
+			return false
+		}
 		writeEvent("response.completed", dto.ResponsesStreamResponse{Response: &response})
-		return
+		return true
 	}
 	outputIndex := 0
 	contentIndex := 0
 	if len(response.Output) == 0 {
+		if err := saveFusionResponseState(c, modelAlias, response.ID, stateContext.ParentResponseID, stateContext.Messages, response.Output); err != nil {
+			writeFusionResponsesStreamError(c, modelAlias, fusionResponseStateNewAPIError(err))
+			return false
+		}
 		writeEvent("response.completed", dto.ResponsesStreamResponse{Response: &response})
-		return
+		return true
 	}
 	item := response.Output[0]
 	part := dto.ResponsesStreamPart{
@@ -537,7 +754,12 @@ func writeFusionResponsesStream(c *gin.Context, modelAlias string, result *servi
 		Item:        &item,
 		OutputIndex: &outputIndex,
 	})
+	if err := saveFusionResponseState(c, modelAlias, response.ID, stateContext.ParentResponseID, stateContext.Messages, response.Output); err != nil {
+		writeFusionResponsesStreamError(c, modelAlias, fusionResponseStateNewAPIError(err))
+		return false
+	}
 	writeEvent("response.completed", dto.ResponsesStreamResponse{Response: &response})
+	return true
 }
 
 func writeFusionResponsesStreamEvent(c *gin.Context, eventType string, event dto.ResponsesStreamResponse) {
@@ -545,6 +767,132 @@ func writeFusionResponsesStreamEvent(c *gin.Context, eventType string, event dto
 	if data, err := common.Marshal(event); err == nil {
 		helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: eventType}, string(data))
 	}
+}
+
+type fusionResponsesStreamState struct {
+	response     dto.OpenAIResponsesResponse
+	item         dto.ResponsesOutput
+	part         dto.ResponsesStreamPart
+	sequence     int
+	outputIndex  int
+	contentIndex int
+	text         strings.Builder
+}
+
+func newFusionResponsesStreamState(modelAlias string, responseID string, parentResponseID string) *fusionResponsesStreamState {
+	status, _ := common.Marshal("in_progress")
+	if strings.TrimSpace(responseID) == "" {
+		responseID = newFusionResponseID()
+	}
+	itemID := "msg_fusion_" + common.GetRandomString(12)
+	return &fusionResponsesStreamState{
+		response: dto.OpenAIResponsesResponse{
+			ID:                 responseID,
+			Object:             "response",
+			CreatedAt:          int(common.GetTimestamp()),
+			Status:             status,
+			Model:              modelAlias,
+			Output:             []dto.ResponsesOutput{},
+			ParallelToolCalls:  true,
+			PreviousResponseID: fusionResponsesRawString(parentResponseID),
+			Store:              false,
+		},
+		item: dto.ResponsesOutput{
+			Type:   "message",
+			ID:     itemID,
+			Status: "in_progress",
+			Role:   "assistant",
+		},
+		part: dto.ResponsesStreamPart{
+			Type:        "output_text",
+			Text:        "",
+			Annotations: []interface{}{},
+		},
+	}
+}
+
+func (state *fusionResponsesStreamState) writeEvent(c *gin.Context, eventType string, event dto.ResponsesStreamResponse) {
+	state.sequence++
+	event.SequenceNumber = &state.sequence
+	writeFusionResponsesStreamEvent(c, eventType, event)
+}
+
+func (state *fusionResponsesStreamState) start(c *gin.Context) {
+	state.writeEvent(c, "response.created", dto.ResponsesStreamResponse{Response: &state.response})
+	state.writeEvent(c, "response.in_progress", dto.ResponsesStreamResponse{Response: &state.response})
+	state.writeEvent(c, dto.ResponsesOutputTypeItemAdded, dto.ResponsesStreamResponse{
+		Item:        &state.item,
+		OutputIndex: &state.outputIndex,
+	})
+	state.writeEvent(c, "response.content_part.added", dto.ResponsesStreamResponse{
+		OutputIndex:  &state.outputIndex,
+		ContentIndex: &state.contentIndex,
+		ItemID:       state.item.ID,
+		Part:         &state.part,
+	})
+}
+
+func (state *fusionResponsesStreamState) delta(c *gin.Context, delta string) {
+	if delta == "" {
+		return
+	}
+	state.text.WriteString(delta)
+	state.writeEvent(c, "response.output_text.delta", dto.ResponsesStreamResponse{
+		Delta:        delta,
+		OutputIndex:  &state.outputIndex,
+		ContentIndex: &state.contentIndex,
+		ItemID:       state.item.ID,
+	})
+}
+
+func (state *fusionResponsesStreamState) complete(c *gin.Context, result *service.FusionEngineResult, stateContext fusionResponsesPreparedRequest) bool {
+	text := state.text.String()
+	if result != nil && text == "" {
+		text = result.Content
+	}
+	state.part.Text = text
+	state.item.Status = "completed"
+	state.item.Content = []dto.ResponsesOutputContent{
+		{
+			Type:        "output_text",
+			Text:        text,
+			Annotations: []interface{}{},
+		},
+	}
+	state.writeEvent(c, "response.output_text.done", dto.ResponsesStreamResponse{
+		Text:         text,
+		OutputIndex:  &state.outputIndex,
+		ContentIndex: &state.contentIndex,
+		ItemID:       state.item.ID,
+	})
+	state.writeEvent(c, "response.content_part.done", dto.ResponsesStreamResponse{
+		OutputIndex:  &state.outputIndex,
+		ContentIndex: &state.contentIndex,
+		ItemID:       state.item.ID,
+		Part:         &state.part,
+	})
+	state.writeEvent(c, dto.ResponsesOutputTypeItemDone, dto.ResponsesStreamResponse{
+		Item:        &state.item,
+		OutputIndex: &state.outputIndex,
+	})
+	response := state.response
+	completedStatus, _ := common.Marshal("completed")
+	response.Status = completedStatus
+	response.Output = []dto.ResponsesOutput{state.item}
+	if result != nil {
+		response.Usage = &dto.Usage{
+			InputTokens:        result.Usage.PromptTokens,
+			OutputTokens:       result.Usage.CompletionTokens,
+			TotalTokens:        result.Usage.TotalTokens,
+			InputTokensDetails: &result.Usage.PromptTokensDetails,
+		}
+	}
+	if err := saveFusionResponseState(c, response.Model, response.ID, stateContext.ParentResponseID, stateContext.Messages, response.Output); err != nil {
+		writeFusionResponsesStreamError(c, response.Model, fusionResponseStateNewAPIError(err))
+		return false
+	}
+	state.writeEvent(c, "response.completed", dto.ResponsesStreamResponse{Response: &response})
+	return true
 }
 
 type fusionRelayExecution struct {
@@ -614,7 +962,7 @@ func prepareFusionRelay(c *gin.Context, request *dto.GeneralOpenAIRequest) (*fus
 	}
 
 	executionRequest := *request
-	executionRequest.Stream = common.GetPointer(false)
+	executionRequest.Stream = common.GetPointer(request.Stream != nil && *request.Stream)
 	return &fusionRelayPreparedExecution{
 		RelayInfo:        relayInfo,
 		Config:           config,
@@ -637,6 +985,48 @@ func executePreparedFusionRelay(c *gin.Context, prepared *fusionRelayPreparedExe
 		Config:    prepared.Config,
 		Request:   &prepared.Request,
 	})
+	if err != nil {
+		if relayInfo.Billing != nil {
+			relayInfo.Billing.Refund(c)
+		}
+		return nil, fusionExecutionNewAPIError(err)
+	}
+
+	actualQuota, err := service.CalculateFusionServiceQuota(service.BuildFusionBillingInput(result), prepared.Policy)
+	if err != nil {
+		if relayInfo.Billing != nil {
+			relayInfo.Billing.Refund(c)
+		}
+		return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeModelPriceError, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
+	}
+	relayInfo.SetFirstResponseTime()
+	model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, actualQuota)
+	if err := service.SettleBilling(c, relayInfo, actualQuota); err != nil {
+		common.SysError("error settling fusion billing: " + err.Error())
+	}
+	recordFusionConsumeLog(c, relayInfo, result, prepared.PreConsumedQuota, actualQuota, prepared.Policy, prepared.IsStream)
+	return &fusionRelayExecution{
+		RelayInfo:        relayInfo,
+		Result:           result,
+		PreConsumedQuota: prepared.PreConsumedQuota,
+		ActualQuota:      actualQuota,
+		Policy:           prepared.Policy,
+		IsStream:         prepared.IsStream,
+	}, nil
+}
+
+func executePreparedFusionRelayStream(c *gin.Context, prepared *fusionRelayPreparedExecution, callbacks service.FusionStreamCallbacks) (*fusionRelayExecution, error) {
+	if prepared == nil {
+		return nil, errors.New("fusion execution is not prepared")
+	}
+	relayInfo := prepared.RelayInfo
+	result, err := service.RunFusionEngineStreamFinal(c.Request.Context(), service.FusionEngineRequest{
+		UserID:    relayInfo.UserId,
+		TokenID:   relayInfo.TokenId,
+		TokenName: c.GetString("token_name"),
+		Config:    prepared.Config,
+		Request:   &prepared.Request,
+	}, callbacks)
 	if err != nil {
 		if relayInfo.Billing != nil {
 			relayInfo.Billing.Refund(c)
@@ -707,6 +1097,12 @@ type fusionStreamExecutionResult struct {
 	err       *types.NewAPIError
 }
 
+type fusionStreamExecutionChannels struct {
+	deltaChan  <-chan string
+	resultChan <-chan fusionStreamExecutionResult
+	cancel     context.CancelFunc
+}
+
 func fusionStreamOpenAIError(c *gin.Context, err *types.NewAPIError) types.OpenAIError {
 	if err == nil {
 		return types.OpenAIError{
@@ -721,19 +1117,45 @@ func fusionStreamOpenAIError(c *gin.Context, err *types.NewAPIError) types.OpenA
 }
 
 func writeFusionChatCompletionStreamError(c *gin.Context, err *types.NewAPIError) {
+	logFusionStreamError(c, "chat.completions", err)
 	_ = helper.ObjectData(c, gin.H{"error": fusionStreamOpenAIError(c, err)})
 	helper.Done(c)
 }
 
-func writeFusionResponsesStreamError(c *gin.Context, err *types.NewAPIError) {
-	data, marshalErr := common.Marshal(gin.H{
-		"type":  "error",
-		"error": fusionStreamOpenAIError(c, err),
-	})
-	if marshalErr != nil {
-		return
+func buildFusionResponsesFailedResponse(c *gin.Context, modelAlias string, err *types.NewAPIError) dto.OpenAIResponsesResponse {
+	status, _ := common.Marshal("failed")
+	return dto.OpenAIResponsesResponse{
+		ID:                "resp_fusion_" + common.GetRandomString(12),
+		Object:            "response",
+		CreatedAt:         int(common.GetTimestamp()),
+		Status:            status,
+		Error:             fusionStreamOpenAIError(c, err),
+		Model:             modelAlias,
+		Output:            []dto.ResponsesOutput{},
+		ParallelToolCalls: true,
+		Store:             false,
 	}
-	helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: "error"}, string(data))
+}
+
+func writeFusionResponsesStreamError(c *gin.Context, modelAlias string, err *types.NewAPIError) {
+	logFusionStreamError(c, "responses", err)
+	response := buildFusionResponsesFailedResponse(c, modelAlias, err)
+	writeFusionResponsesStreamEvent(c, "response.failed", dto.ResponsesStreamResponse{
+		Response: &response,
+	})
+}
+
+func logFusionStreamError(c *gin.Context, format string, err *types.NewAPIError) {
+	message := "fusion request failed"
+	if err != nil {
+		message = err.Error()
+	}
+	common.SysError(fmt.Sprintf(
+		"fusion %s stream error: request_id=%s err=%s",
+		format,
+		fusionRequestID(c),
+		common.LocalLogPreview(message),
+	))
 }
 
 func waitFusionStreamExecution(c *gin.Context, prepared *fusionRelayPreparedExecution, writeError func(*gin.Context, *types.NewAPIError)) (*fusionRelayExecution, bool) {
@@ -780,6 +1202,132 @@ func waitFusionStreamExecution(c *gin.Context, prepared *fusionRelayPreparedExec
 		case <-c.Request.Context().Done():
 			cancelExecution()
 			return nil, false
+		}
+	}
+}
+
+func startFusionStreamExecution(c *gin.Context, prepared *fusionRelayPreparedExecution) fusionStreamExecutionChannels {
+	deltaChan := make(chan string, 16)
+	resultChan := make(chan fusionStreamExecutionResult, 1)
+	executionCtx, cancelExecution := context.WithCancel(c.Request.Context())
+	executionContext := c.Copy()
+	if executionContext.Request != nil {
+		executionContext.Request = executionContext.Request.WithContext(executionCtx)
+	}
+	go func() {
+		defer close(deltaChan)
+		execution, err := executePreparedFusionRelayStream(executionContext, prepared, service.FusionStreamCallbacks{
+			OnTextDelta: func(delta string) error {
+				if delta == "" {
+					return nil
+				}
+				select {
+				case deltaChan <- delta:
+					return nil
+				case <-executionCtx.Done():
+					return executionCtx.Err()
+				}
+			},
+		})
+		result := fusionStreamExecutionResult{execution: execution}
+		if err != nil {
+			if newAPIError, ok := err.(*types.NewAPIError); ok {
+				result.err = newAPIError
+			} else {
+				result.err = fusionExecutionNewAPIError(err)
+			}
+		}
+		resultChan <- result
+	}()
+	return fusionStreamExecutionChannels{
+		deltaChan:  deltaChan,
+		resultChan: resultChan,
+		cancel:     cancelExecution,
+	}
+}
+
+func streamFusionChatCompletion(c *gin.Context, prepared *fusionRelayPreparedExecution, modelAlias string) bool {
+	channels := startFusionStreamExecution(c, prepared)
+	defer channels.cancel()
+	if err := helper.PingData(c); err != nil {
+		return false
+	}
+	streamID := "chatcmpl-fusion-" + common.GetRandomString(12)
+	created := common.GetTimestamp()
+	ticker := time.NewTicker(fusionStreamPingInterval)
+	defer ticker.Stop()
+	sentDelta := false
+	deltaChan := channels.deltaChan
+	for {
+		select {
+		case delta, ok := <-deltaChan:
+			if !ok {
+				deltaChan = nil
+				continue
+			}
+			writeFusionChatCompletionDelta(c, streamID, created, modelAlias, delta, !sentDelta)
+			sentDelta = true
+		case result := <-channels.resultChan:
+			if result.err != nil {
+				writeFusionChatCompletionStreamError(c, result.err)
+				return false
+			}
+			if !sentDelta {
+				writeFusionChatCompletionStream(c, modelAlias, result.execution.Result)
+				return true
+			}
+			writeFusionChatCompletionStop(c, streamID, created, modelAlias, result.execution.Result)
+			return true
+		case <-ticker.C:
+			if err := helper.PingData(c); err != nil {
+				return false
+			}
+		case <-c.Request.Context().Done():
+			return false
+		}
+	}
+}
+
+func streamFusionResponses(c *gin.Context, prepared *fusionRelayPreparedExecution, modelAlias string, stateContext fusionResponsesPreparedRequest) bool {
+	channels := startFusionStreamExecution(c, prepared)
+	defer channels.cancel()
+	if err := helper.PingData(c); err != nil {
+		return false
+	}
+	ticker := time.NewTicker(fusionStreamPingInterval)
+	defer ticker.Stop()
+	started := false
+	sentDelta := false
+	state := newFusionResponsesStreamState(modelAlias, newFusionResponseID(), stateContext.ParentResponseID)
+	deltaChan := channels.deltaChan
+	for {
+		select {
+		case delta, ok := <-deltaChan:
+			if !ok {
+				deltaChan = nil
+				continue
+			}
+			if !started {
+				state.start(c)
+				started = true
+			}
+			state.delta(c, delta)
+			sentDelta = true
+		case result := <-channels.resultChan:
+			if result.err != nil {
+				writeFusionResponsesStreamError(c, modelAlias, result.err)
+				return false
+			}
+			if !sentDelta {
+				return writeFusionResponsesStream(c, modelAlias, result.execution.Result, stateContext)
+			}
+			return state.complete(c, result.execution.Result, stateContext)
+		case <-ticker.C:
+			if err := helper.PingData(c); err != nil {
+				return false
+			}
+		case <-c.Request.Context().Done():
+			return false
 		}
 	}
 }
@@ -920,11 +1468,7 @@ func FusionChatCompletions(c *gin.Context) {
 			return
 		}
 		helper.SetEventStreamHeaders(c)
-		execution, ok := waitFusionStreamExecution(c, prepared, writeFusionChatCompletionStreamError)
-		if !ok {
-			return
-		}
-		writeFusionChatCompletionStream(c, request.Model, execution.Result)
+		streamFusionChatCompletion(c, prepared, request.Model)
 		return
 	}
 	execution, ok := runFusionRelay(c, &request)
@@ -934,9 +1478,13 @@ func FusionChatCompletions(c *gin.Context) {
 	c.JSON(http.StatusOK, buildFusionChatCompletionResponse(request.Model, execution.Result))
 }
 
-func fusionResponsesRequestToChatRequest(request *dto.OpenAIResponsesRequest) (*dto.GeneralOpenAIRequest, error) {
+func fusionResponsesRequestToChatRequest(c *gin.Context, request *dto.OpenAIResponsesRequest) (fusionResponsesPreparedRequest, error) {
 	if strings.TrimSpace(request.Model) == "" {
-		return nil, errors.New("model is required")
+		return fusionResponsesPreparedRequest{}, errors.New("model is required")
+	}
+	parentMessages, callIDByItemID, err := loadFusionPreviousResponseState(c, request)
+	if err != nil {
+		return fusionResponsesPreparedRequest{}, err
 	}
 	messages := make([]dto.Message, 0)
 	if len(request.Instructions) > 0 && common.GetJsonType(request.Instructions) == "string" {
@@ -948,13 +1496,18 @@ func fusionResponsesRequestToChatRequest(request *dto.OpenAIResponsesRequest) (*
 			})
 		}
 	}
-	inputMessages, err := fusionResponsesInputToChatMessages(request.Input)
+	messages = append(messages, parentMessages...)
+	inputConversion, err := fusionResponsesInputToChatMessages(request.Input)
 	if err != nil {
-		return nil, err
+		return fusionResponsesPreparedRequest{}, err
 	}
-	messages = append(messages, inputMessages...)
+	for itemID, callID := range inputConversion.CallIDByItemID {
+		callIDByItemID[itemID] = callID
+	}
+	canonicalizeFusionResponseToolMessages(inputConversion.Messages, callIDByItemID)
+	messages = append(messages, inputConversion.Messages...)
 	if len(messages) == 0 {
-		return nil, errors.New("input is required")
+		return fusionResponsesPreparedRequest{}, errors.New("input is required")
 	}
 	chatRequest := &dto.GeneralOpenAIRequest{
 		Model:         strings.TrimSpace(request.Model),
@@ -971,14 +1524,14 @@ func fusionResponsesRequestToChatRequest(request *dto.OpenAIResponsesRequest) (*
 	if len(request.Tools) > 0 {
 		tools, err := fusionResponsesToolsToChatTools(request.Tools)
 		if err != nil {
-			return nil, err
+			return fusionResponsesPreparedRequest{}, err
 		}
 		chatRequest.Tools = tools
 	}
 	if len(request.ToolChoice) > 0 {
 		toolChoice, err := fusionResponsesToolChoiceToChatToolChoice(request.ToolChoice)
 		if err != nil {
-			return nil, err
+			return fusionResponsesPreparedRequest{}, err
 		}
 		chatRequest.ToolChoice = toolChoice
 	}
@@ -988,55 +1541,141 @@ func fusionResponsesRequestToChatRequest(request *dto.OpenAIResponsesRequest) (*
 			chatRequest.ParallelTooCalls = &parallelToolCalls
 		}
 	}
-	return chatRequest, nil
+	return fusionResponsesPreparedRequest{
+		ChatRequest:      chatRequest,
+		ParentResponseID: strings.TrimSpace(request.PreviousResponseID),
+		Messages:         append([]dto.Message{}, messages...),
+	}, nil
 }
 
-func fusionResponsesInputToChatMessages(raw []byte) ([]dto.Message, error) {
+func loadFusionPreviousResponseState(c *gin.Context, request *dto.OpenAIResponsesRequest) ([]dto.Message, map[string]string, error) {
+	callIDByItemID := make(map[string]string)
+	previousResponseID := strings.TrimSpace(request.PreviousResponseID)
+	if previousResponseID == "" {
+		return nil, callIDByItemID, nil
+	}
+	state, err := model.GetFusionResponseState(previousResponseID, c.GetInt("id"), c.GetInt("token_id"))
+	if err != nil {
+		return nil, nil, errFusionResponseStateUnavailable
+	}
+	if strings.TrimSpace(state.ModelAlias) != strings.TrimSpace(request.Model) {
+		return nil, nil, errFusionResponseStateUnavailable
+	}
+	payload, err := state.GetStatePayload()
+	if err != nil {
+		return nil, nil, errFusionResponseStateUnavailable
+	}
+	for itemID, callID := range payload.CallIDByItemID {
+		addFusionResponseCallIDMapping(callIDByItemID, itemID, callID)
+	}
+	for _, output := range payload.Outputs {
+		callID := strings.TrimSpace(output.CallId)
+		if callID == "" {
+			callID = strings.TrimSpace(output.ID)
+		}
+		addFusionResponseCallIDMapping(callIDByItemID, output.ID, callID)
+	}
+	return append([]dto.Message{}, payload.Messages...), callIDByItemID, nil
+}
+
+type fusionResponsesInputConversion struct {
+	Messages       []dto.Message
+	CallIDByItemID map[string]string
+}
+
+func fusionResponsesInputToChatMessages(raw []byte) (fusionResponsesInputConversion, error) {
+	conversion := fusionResponsesInputConversion{
+		Messages:       []dto.Message{},
+		CallIDByItemID: map[string]string{},
+	}
 	if len(raw) == 0 {
-		return nil, nil
+		return conversion, nil
 	}
 
 	switch common.GetJsonType(raw) {
 	case "string":
 		var text string
 		if err := common.Unmarshal(raw, &text); err != nil {
-			return nil, err
+			return conversion, err
 		}
 		if strings.TrimSpace(text) == "" {
-			return nil, nil
+			return conversion, nil
 		}
-		return []dto.Message{{Role: "user", Content: text}}, nil
+		conversion.Messages = append(conversion.Messages, dto.Message{Role: "user", Content: text})
+		return conversion, nil
 	case "object":
 		var item map[string]interface{}
 		if err := common.Unmarshal(raw, &item); err != nil {
-			return nil, err
+			return conversion, err
 		}
-		return fusionResponsesInputItemToChatMessages(item)
+		itemMessages, err := fusionResponsesInputItemToChatMessages(item)
+		if err != nil {
+			return conversion, err
+		}
+		conversion.Messages = append(conversion.Messages, itemMessages...)
+		mergeFusionResponseCallIDMappings(conversion.CallIDByItemID, fusionResponsesInputItemCallIDMappings(item))
+		return conversion, nil
 	case "array":
 		var items []interface{}
 		if err := common.Unmarshal(raw, &items); err != nil {
-			return nil, err
+			return conversion, err
 		}
-		messages := make([]dto.Message, 0, len(items))
 		for _, rawItem := range items {
 			switch item := rawItem.(type) {
 			case string:
 				if strings.TrimSpace(item) != "" {
-					messages = append(messages, dto.Message{Role: "user", Content: item})
+					conversion.Messages = append(conversion.Messages, dto.Message{Role: "user", Content: item})
 				}
 			case map[string]interface{}:
 				itemMessages, err := fusionResponsesInputItemToChatMessages(item)
 				if err != nil {
-					return nil, err
+					return conversion, err
 				}
-				messages = append(messages, itemMessages...)
+				conversion.Messages = append(conversion.Messages, itemMessages...)
+				mergeFusionResponseCallIDMappings(conversion.CallIDByItemID, fusionResponsesInputItemCallIDMappings(item))
 			default:
-				return nil, fmt.Errorf("fusion responses input array contains unsupported item %T", rawItem)
+				return conversion, fmt.Errorf("fusion responses input array contains unsupported item %T", rawItem)
 			}
 		}
-		return messages, nil
+		return conversion, nil
 	default:
-		return nil, fmt.Errorf("fusion responses does not support input JSON type %s in v1", common.GetJsonType(raw))
+		return conversion, fmt.Errorf("fusion responses does not support input JSON type %s in v1", common.GetJsonType(raw))
+	}
+}
+
+func mergeFusionResponseCallIDMappings(target map[string]string, source map[string]string) {
+	for itemID, callID := range source {
+		target[itemID] = callID
+	}
+}
+
+func fusionResponsesInputItemCallIDMappings(item map[string]interface{}) map[string]string {
+	mapping := make(map[string]string)
+	itemType := strings.TrimSpace(common.Interface2String(item["type"]))
+	if itemType != "function_call" {
+		return mapping
+	}
+	callID := strings.TrimSpace(common.Interface2String(item["call_id"]))
+	itemID := strings.TrimSpace(common.Interface2String(item["id"]))
+	if callID == "" {
+		callID = itemID
+	}
+	addFusionResponseCallIDMapping(mapping, itemID, callID)
+	return mapping
+}
+
+func canonicalizeFusionResponseToolMessages(messages []dto.Message, callIDByItemID map[string]string) {
+	if len(callIDByItemID) == 0 {
+		return
+	}
+	for index := range messages {
+		if messages[index].Role != "tool" {
+			continue
+		}
+		toolCallID := strings.TrimSpace(messages[index].ToolCallId)
+		if canonical, ok := callIDByItemID[toolCallID]; ok && strings.TrimSpace(canonical) != "" {
+			messages[index].ToolCallId = canonical
+		}
 	}
 }
 
@@ -1361,11 +2000,12 @@ func FusionResponses(c *gin.Context) {
 		fusionOpenAIError(c, status, err.Error(), types.ErrorCodeInvalidRequest)
 		return
 	}
-	chatRequest, err := fusionResponsesRequestToChatRequest(&responsesRequest)
+	preparedRequest, err := fusionResponsesRequestToChatRequest(c, &responsesRequest)
 	if err != nil {
 		fusionOpenAIError(c, http.StatusBadRequest, err.Error(), types.ErrorCodeInvalidRequest)
 		return
 	}
+	chatRequest := preparedRequest.ChatRequest
 	if err := validateFusionRelayChatRequest(chatRequest); err != nil {
 		fusionOpenAIError(c, http.StatusBadRequest, err.Error(), types.ErrorCodeInvalidRequest)
 		return
@@ -1376,18 +2016,20 @@ func FusionResponses(c *gin.Context) {
 			return
 		}
 		helper.SetEventStreamHeaders(c)
-		execution, ok := waitFusionStreamExecution(c, prepared, writeFusionResponsesStreamError)
-		if !ok {
-			return
-		}
-		writeFusionResponsesStream(c, chatRequest.Model, execution.Result)
+		streamFusionResponses(c, prepared, chatRequest.Model, preparedRequest)
 		return
 	}
 	execution, ok := runFusionRelay(c, chatRequest)
 	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, buildFusionResponsesResponse(chatRequest.Model, execution.Result))
+	responseID := newFusionResponseID()
+	response := buildFusionResponsesResponse(chatRequest.Model, responseID, preparedRequest.ParentResponseID, execution.Result)
+	if err := saveFusionResponseState(c, chatRequest.Model, response.ID, preparedRequest.ParentResponseID, preparedRequest.Messages, response.Output); err != nil {
+		fusionOpenAIError(c, http.StatusInternalServerError, err.Error(), types.ErrorCodeBadResponse)
+		return
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func validateFusionKeyStatus(status int) error {

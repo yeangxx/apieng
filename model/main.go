@@ -283,6 +283,7 @@ func migrateDB() error {
 		&FusionUpstreamTemplate{},
 		&FusionAPIKey{},
 		&FusionConfig{},
+		&FusionResponseState{},
 		&PerfMetric{},
 	)
 	if err != nil {
@@ -338,6 +339,7 @@ func migrateDBFast() error {
 		{&FusionUpstreamTemplate{}, "FusionUpstreamTemplate"},
 		{&FusionAPIKey{}, "FusionAPIKey"},
 		{&FusionConfig{}, "FusionConfig"},
+		{&FusionResponseState{}, "FusionResponseState"},
 		{&PerfMetric{}, "PerfMetric"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大

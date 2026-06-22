@@ -67,7 +67,7 @@ func setupFusionControllerTestDB(t *testing.T) {
 	require.NoError(t, err)
 	model.DB = db
 	model.LOG_DB = db
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Log{}, &model.UserSubscription{}, &model.FusionUpstreamTemplate{}, &model.FusionAPIKey{}, &model.FusionConfig{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Log{}, &model.UserSubscription{}, &model.FusionUpstreamTemplate{}, &model.FusionAPIKey{}, &model.FusionConfig{}, &model.FusionResponseState{}))
 	t.Cleanup(func() {
 		sqlDB, err := db.DB()
 		if err == nil {
@@ -380,6 +380,26 @@ func fusionRelayResponse(modelName string, content string, promptTokens int, com
 			CompletionTokens: completionTokens,
 			TotalTokens:      promptTokens + completionTokens,
 		},
+	}
+}
+
+func writeFusionRelayStreamChunk(t *testing.T, w http.ResponseWriter, chunk gin.H) {
+	t.Helper()
+	data, err := common.Marshal(chunk)
+	require.NoError(t, err)
+	_, err = fmt.Fprintf(w, "data: %s\n\n", data)
+	require.NoError(t, err)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func writeFusionRelayStreamDone(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	_, err := fmt.Fprint(w, "data: [DONE]\n\n")
+	require.NoError(t, err)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
 	}
 }
 
@@ -1050,6 +1070,71 @@ func TestStandardChatCompletionsFusionStreamReturnsCompatibleSSE(t *testing.T) {
 	assert.Contains(t, body, "[DONE]")
 }
 
+func TestStandardChatCompletionsFusionStreamWritesJudgeDeltas(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	var calls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		require.Equal(t, "/v1/chat/completions", r.URL.Path)
+		require.Equal(t, "Bearer sk-controller-fusion", r.Header.Get("Authorization"))
+		var request dto.GeneralOpenAIRequest
+		require.NoError(t, common.DecodeJson(r.Body, &request))
+		require.NotNil(t, request.Stream)
+		require.True(t, *request.Stream)
+		w.Header().Set("Content-Type", "text/event-stream")
+		contentParts := []string{"candidate answer"}
+		if request.Model == "judge-model" {
+			contentParts = []string{"streamed ", "final"}
+		}
+		for _, part := range contentParts {
+			writeFusionRelayStreamChunk(t, w, gin.H{
+				"id":      "chatcmpl-stream-test",
+				"object":  "chat.completion.chunk",
+				"created": common.GetTimestamp(),
+				"model":   request.Model,
+				"choices": []gin.H{{"index": 0, "delta": gin.H{"role": "assistant", "content": part}, "finish_reason": nil}},
+			})
+		}
+		writeFusionRelayStreamChunk(t, w, gin.H{
+			"id":      "chatcmpl-stream-test",
+			"object":  "chat.completion.chunk",
+			"created": common.GetTimestamp(),
+			"model":   request.Model,
+			"choices": []gin.H{{"index": 0, "delta": gin.H{}, "finish_reason": "stop"}},
+			"usage": gin.H{
+				"prompt_tokens":     10,
+				"completion_tokens": len(contentParts),
+				"total_tokens":      10 + len(contentParts),
+			},
+		})
+		writeFusionRelayStreamDone(t, w)
+	}))
+	t.Cleanup(server.Close)
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+
+	recorder := fusionStandardChatRelayJSONRequest(t, gin.H{
+		"model":  "fusion:research",
+		"stream": true,
+		"messages": []gin.H{
+			{"role": "user", "content": "hello"},
+		},
+	}, 1)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
+	assert.Equal(t, int32(2), calls.Load())
+	body := recorder.Body.String()
+	assert.Contains(t, body, `"content":"streamed "`)
+	assert.Contains(t, body, `"content":"final"`)
+	assert.Less(t, strings.Index(body, `"content":"streamed "`), strings.Index(body, `"content":"final"`))
+	assert.NotContains(t, body, `"content":"streamed final"`)
+	assert.Contains(t, body, "[DONE]")
+}
+
 func TestFusionChatCompletionsStreamSendsHeartbeatWhileFusionRuns(t *testing.T) {
 	setupFusionControllerTestDB(t)
 	originalPingInterval := fusionStreamPingInterval
@@ -1299,6 +1384,70 @@ func TestResponsesFusionStreamReturnsCompatibleSSE(t *testing.T) {
 	assert.Contains(t, body, "final answer")
 }
 
+func TestResponsesFusionStreamWritesJudgeDeltas(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	var calls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		require.Equal(t, "/v1/chat/completions", r.URL.Path)
+		require.Equal(t, "Bearer sk-controller-fusion", r.Header.Get("Authorization"))
+		var request dto.GeneralOpenAIRequest
+		require.NoError(t, common.DecodeJson(r.Body, &request))
+		require.NotNil(t, request.Stream)
+		require.True(t, *request.Stream)
+		w.Header().Set("Content-Type", "text/event-stream")
+		contentParts := []string{"candidate answer"}
+		if request.Model == "judge-model" {
+			contentParts = []string{"streamed ", "final"}
+		}
+		for _, part := range contentParts {
+			writeFusionRelayStreamChunk(t, w, gin.H{
+				"id":      "chatcmpl-stream-test",
+				"object":  "chat.completion.chunk",
+				"created": common.GetTimestamp(),
+				"model":   request.Model,
+				"choices": []gin.H{{"index": 0, "delta": gin.H{"role": "assistant", "content": part}, "finish_reason": nil}},
+			})
+		}
+		writeFusionRelayStreamChunk(t, w, gin.H{
+			"id":      "chatcmpl-stream-test",
+			"object":  "chat.completion.chunk",
+			"created": common.GetTimestamp(),
+			"model":   request.Model,
+			"choices": []gin.H{{"index": 0, "delta": gin.H{}, "finish_reason": "stop"}},
+			"usage": gin.H{
+				"prompt_tokens":     10,
+				"completion_tokens": len(contentParts),
+				"total_tokens":      10 + len(contentParts),
+			},
+		})
+		writeFusionRelayStreamDone(t, w)
+	}))
+	t.Cleanup(server.Close)
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+
+	recorder := fusionStandardResponsesRelayJSONRequest(t, gin.H{
+		"model":  "fusion:research",
+		"input":  "hello",
+		"stream": true,
+	}, 1)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
+	assert.Equal(t, int32(2), calls.Load())
+	body := recorder.Body.String()
+	assert.GreaterOrEqual(t, strings.Count(body, "event: response.output_text.delta"), 2)
+	assert.Contains(t, body, `"delta":"streamed "`)
+	assert.Contains(t, body, `"delta":"final"`)
+	assert.Less(t, strings.Index(body, `"delta":"streamed "`), strings.Index(body, `"delta":"final"`))
+	assert.Contains(t, body, `"text":"streamed final"`)
+	assert.Contains(t, body, "event: response.completed")
+}
+
 func TestResponsesFusionStreamTimeoutReturnsTimeoutErrorCode(t *testing.T) {
 	setupFusionControllerTestDB(t)
 	var calls atomic.Int32
@@ -1308,15 +1457,14 @@ func TestResponsesFusionStreamTimeoutReturnsTimeoutErrorCode(t *testing.T) {
 		require.Equal(t, "Bearer sk-controller-fusion", r.Header.Get("Authorization"))
 		var request dto.GeneralOpenAIRequest
 		require.NoError(t, common.DecodeJson(r.Body, &request))
-		w.Header().Set("Content-Type", "application/json")
+		require.NotNil(t, request.Stream)
+		require.True(t, *request.Stream)
+		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
 		time.Sleep(50 * time.Millisecond)
-		data, err := common.Marshal(fusionRelayResponse(request.Model, "late answer", 10, 2))
-		require.NoError(t, err)
-		_, _ = w.Write(data)
 	}))
 	t.Cleanup(server.Close)
 	configureFusionRelayServer(t, server.URL, nil)
@@ -1336,7 +1484,8 @@ func TestResponsesFusionStreamTimeoutReturnsTimeoutErrorCode(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	assert.Equal(t, int32(1), calls.Load())
 	body := recorder.Body.String()
-	assert.Contains(t, body, "event: error")
+	assert.Contains(t, body, "event: response.failed")
+	assert.Contains(t, body, `"status":"failed"`)
 	assert.Contains(t, body, string(types.ErrorCodeChannelResponseTimeExceeded))
 	assert.Contains(t, body, "upstream request timeout")
 	assert.NotContains(t, body, "context deadline exceeded")
@@ -1390,6 +1539,122 @@ func TestResponsesFusionToolsReturnsFunctionCall(t *testing.T) {
 	assert.Equal(t, "call_read", response.Output[0].CallId)
 	assert.Equal(t, "read_file", response.Output[0].Name)
 	assert.Equal(t, `{"path":"main.go"}`, response.Output[0].ArgumentsString())
+	_, err := model.GetFusionResponseState(response.ID, 1, 10)
+	require.NoError(t, err)
+}
+
+func TestResponsesFusionPreviousResponseIDRestoresToolCallContext(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	var seenSecondRound atomic.Bool
+	var calls atomic.Int32
+	var candidateCalls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		require.Equal(t, "/v1/chat/completions", r.URL.Path)
+		require.Equal(t, "Bearer sk-controller-fusion", r.Header.Get("Authorization"))
+		var request dto.GeneralOpenAIRequest
+		require.NoError(t, common.DecodeJson(r.Body, &request))
+		var response dto.OpenAITextResponse
+		switch request.Model {
+		case "candidate-a":
+			if candidateCalls.Add(1) == 1 {
+				response = fusionRelayToolCallResponse("candidate-a", "call_read", "read_file", `{"path":"main.go"}`, 10, 1)
+				break
+			}
+			seenSecondRound.Store(true)
+			require.Len(t, request.Messages, 3)
+			assert.Equal(t, "user", request.Messages[0].Role)
+			assert.Equal(t, "hello", request.Messages[0].StringContent())
+			assert.Equal(t, "assistant", request.Messages[1].Role)
+			toolCalls := request.Messages[1].ParseToolCalls()
+			require.Len(t, toolCalls, 1)
+			assert.Equal(t, "call_read", toolCalls[0].ID)
+			assert.Equal(t, "read_file", toolCalls[0].Function.Name)
+			assert.Equal(t, "tool", request.Messages[2].Role)
+			assert.Equal(t, "call_read", request.Messages[2].ToolCallId)
+			assert.Contains(t, request.Messages[2].StringContent(), "package main")
+			response = fusionRelayResponse("candidate-a", "candidate saw tool output", 10, 2)
+		case "judge-model":
+			response = fusionRelayResponse("judge-model", "final answer", 5, 3)
+		default:
+			require.FailNow(t, "unexpected upstream model "+request.Model)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		data, err := common.Marshal(response)
+		require.NoError(t, err)
+		_, err = w.Write(data)
+		require.NoError(t, err)
+	}))
+	t.Cleanup(server.Close)
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+
+	firstRecorder := fusionStandardResponsesRelayJSONRequest(t, gin.H{
+		"model": "fusion:research",
+		"input": "hello",
+		"tools": []gin.H{
+			{
+				"type": "function",
+				"name": "read_file",
+				"parameters": gin.H{
+					"type": "object",
+				},
+			},
+		},
+	}, 1)
+
+	require.Equal(t, http.StatusOK, firstRecorder.Code)
+	var firstResponse dto.OpenAIResponsesResponse
+	require.NoError(t, common.Unmarshal(firstRecorder.Body.Bytes(), &firstResponse))
+	require.NotEmpty(t, firstResponse.ID)
+	require.Len(t, firstResponse.Output, 1)
+	assert.Equal(t, "function_call", firstResponse.Output[0].Type)
+
+	secondRecorder := fusionStandardResponsesRelayJSONRequest(t, gin.H{
+		"model":                "fusion:research",
+		"previous_response_id": firstResponse.ID,
+		"input": []gin.H{
+			{
+				"type":    "function_call_output",
+				"call_id": "fc_read",
+				"output":  "package main\nfunc main() {}",
+			},
+		},
+	}, 1)
+
+	require.Equal(t, http.StatusOK, secondRecorder.Code)
+	assert.True(t, seenSecondRound.Load())
+	assert.Equal(t, int32(3), calls.Load())
+	var secondResponse dto.OpenAIResponsesResponse
+	require.NoError(t, common.Unmarshal(secondRecorder.Body.Bytes(), &secondResponse))
+	assert.True(t, strings.HasPrefix(secondResponse.ID, "resp_fusion_"))
+	require.Len(t, secondResponse.Output, 1)
+	assert.Equal(t, "message", secondResponse.Output[0].Type)
+}
+
+func TestResponsesFusionPreviousResponseIDRejectsMissingState(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"fusion_setting.enabled":              "true",
+		"fusion_setting.allowed_token_groups": `["default"]`,
+	}))
+	recorder := fusionStandardResponsesRelayJSONRequest(t, gin.H{
+		"model":                "fusion:research",
+		"previous_response_id": "resp_missing",
+		"input": []gin.H{
+			{
+				"type":    "function_call_output",
+				"call_id": "call_read",
+				"output":  "result",
+			},
+		},
+	}, 1)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "Fusion previous_response_id state not found or expired")
 }
 
 func TestResponsesFusionPreservesFunctionCallOutputForCandidates(t *testing.T) {
@@ -1509,4 +1774,12 @@ func TestResponsesFusionToolCallStreamReturnsFunctionCallEvents(t *testing.T) {
 	assert.Contains(t, body, "function_call")
 	assert.Contains(t, body, "call_read")
 	assert.Contains(t, body, "read_file")
+	idStart := strings.Index(body, `"id":"resp_fusion_`)
+	require.NotEqual(t, -1, idStart)
+	idStart += len(`"id":"`)
+	idEnd := strings.Index(body[idStart:], `"`)
+	require.NotEqual(t, -1, idEnd)
+	responseID := body[idStart : idStart+idEnd]
+	_, err := model.GetFusionResponseState(responseID, 1, 10)
+	require.NoError(t, err)
 }

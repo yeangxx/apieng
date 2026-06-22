@@ -270,6 +270,38 @@ Indexes:
 - `user_id, enabled`
 - unique `user_id, model_alias`
 
+### `fusion_response_states`
+
+Model file:
+
+```text
+model/fusion_response_state.go
+```
+
+Purpose:
+
+- Persist the minimum context required for Fusion `/v1/responses previous_response_id` continuation.
+- Store normalized Chat messages, Responses output items, and Responses item id to canonical `call_id` mappings.
+- Do not store upstream API keys or raw unbounded request/response bodies.
+
+Fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | int | GORM primary key |
+| `response_id` | string | generated Fusion Responses id, unique |
+| `user_id` | int | owner boundary |
+| `token_id` | int | API token boundary |
+| `model_alias` | string | Fusion alias such as `fusion:research` |
+| `parent_response_id` | string | previous state id when this response continued a chain |
+| `state_ciphertext` | string | encrypted state envelope using `CRYPTO_SECRET` |
+| `expires_at` | int64 | unix timestamp, cleanup boundary |
+| `created_at` | int64 | unix timestamp |
+| `updated_at` | int64 | unix timestamp |
+| `deleted_at` | gorm.DeletedAt | soft delete |
+
+Reads must use `response_id + user_id + token_id` and reject expired rows. This prevents a previous response id from being replayed across users or across API keys.
+
 ### Migration
 
 Add Fusion structs to `model.migrateDB()`. Use GORM `AutoMigrate` for normal fields. Store JSON-like lists/maps in `TEXT` strings to avoid database-specific JSON behavior.
@@ -482,15 +514,18 @@ Supported request shape:
 
 - OpenAI-compatible chat completions.
 - OpenAI Responses text input is adapted into an internal chat request for Fusion execution.
-- `stream=true` is accepted as a compatibility layer. Fusion still executes internally as non-streaming aggregation. The handler opens the SSE response before candidate/Judge execution, sends heartbeat comments while aggregation is running, then emits a final SSE chunk/event and completion marker.
+- `stream=true` is accepted as a compatibility layer. The handler opens the SSE response before candidate/Judge execution and sends heartbeat comments while candidate aggregation is running. When the final Judge synthesis starts and the Judge upstream supports OpenAI-compatible SSE, Fusion streams Judge text deltas to the client, then emits the normal completion marker. If the Judge upstream falls back to non-streaming JSON, Fusion still returns a compatible final SSE response.
+- For pure text `stream=true` requests, Fusion uses a latency-oriented candidate path: candidates are asked for short briefs instead of full artifacts, candidate generation is capped by `fusion_setting.stream_candidate_max_tokens`, and Judge can start as soon as `min_successes` candidates succeed. This prevents long code or HTML tasks from being fully generated once by candidates and again by Judge.
 - `n` must be absent or `1`.
 - Modern `tools` / `tool_choice` are passed to candidate models. If any successful candidate returns `tool_calls`, Fusion returns the first tool-call candidate in configured candidate order and skips Judge for that turn.
 - Agent tool loops are treated as a state machine:
   - Tool request turn: candidate models receive the client's tools and may return `tool_calls`; Fusion returns one deterministic tool call and does not run Judge.
-  - Tool observation turn: `/v1/responses` input items such as `function_call` and `function_call_output` are converted back into internal chat `assistant.tool_calls` and `role=tool` messages with the same `call_id`, so candidates can see the tool result.
+  - Tool observation turn: `/v1/responses` restores `previous_response_id` state when supplied, then appends current input items such as `function_call_output`. The restored context includes the previous assistant `tool_calls`, so candidates receive a valid Chat transcript before the tool result.
   - Final text turn: when candidates stop requesting tools and return text, Fusion resumes normal Judge synthesis.
 - Fusion must preserve tool call identifiers across turns. Dropping `call_id` or the tool result makes agent clients repeat the same tool call.
-- Upstream execution is stream-aware for agent-like turns. If the external request is `stream=true`, includes modern tools, or includes tool observation history, Fusion sends OpenAI-compatible candidate and Judge calls with `stream=true` where applicable and consumes upstream SSE internally. In this path `timeout_ms` acts as a first-response / idle timeout, not a total stream duration cap: active streams can run longer as long as they keep producing events. The public Fusion response is still the current final-result compatibility response, but internal streaming avoids long silent JSON-body reads from slow reasoning/tool models.
+- Fusion stores the minimum state required for `/v1/responses previous_response_id`: normalized Chat messages, Responses output, and item id to `call_id` mappings. The state is encrypted with `CRYPTO_SECRET`, scoped by `response_id + user_id + token_id`, and expires by `fusion_setting.response_state_ttl_seconds`.
+- `/v1/chat/completions` clients must still send complete tool history themselves. If a Chat request contains a `role=tool` message without a preceding assistant `tool_calls` item, Fusion rejects it before candidate calls.
+- Upstream execution is stream-aware for agent-like turns. If the external request is `stream=true`, includes modern tools, or includes tool observation history, Fusion sends OpenAI-compatible candidate and Judge calls with `stream=true` where applicable and consumes upstream SSE internally. In this path `timeout_ms` acts as a first-response / idle timeout, not a total stream duration cap: active streams can run longer as long as they keep producing events. External `stream=true` text responses stream final Judge deltas after candidate aggregation; candidate tokens are not multiplexed to the client.
 - Ordinary non-tool, non-stream Fusion requests continue to use non-streaming upstream calls so providers without streaming support are not forced onto a different path.
 
 Unsupported in the first version:
@@ -521,7 +556,7 @@ For each candidate:
 
 1. Decrypt the user's key.
 2. Build an OpenAI-compatible `/v1/chat/completions` request.
-3. Force `stream=false`.
+3. Use internal upstream streaming for external stream/tool/tool-observation turns; otherwise use non-streaming JSON.
 4. Apply model override.
 5. Remove Fusion-only fields.
 6. Apply default safety filters for expensive or privacy-sensitive fields.
@@ -628,6 +663,10 @@ fusion_setting.charge_failed_candidates
 fusion_setting.failed_candidate_quota
 fusion_setting.max_judge_input_tokens
 fusion_setting.max_candidate_output_chars
+fusion_setting.stream_candidate_brief
+fusion_setting.stream_candidate_max_tokens
+fusion_setting.response_state_ttl_seconds
+fusion_setting.response_state_max_payload_bytes
 fusion_setting.allow_private_base_url
 fusion_setting.allowed_base_url_domains
 fusion_setting.allowed_base_url_ports
@@ -654,6 +693,10 @@ fusion_setting.charge_failed_candidates=false
 fusion_setting.failed_candidate_quota=0
 fusion_setting.max_judge_input_tokens=128000
 fusion_setting.max_candidate_output_chars=20000
+fusion_setting.stream_candidate_brief=true
+fusion_setting.stream_candidate_max_tokens=1024
+fusion_setting.response_state_ttl_seconds=86400
+fusion_setting.response_state_max_payload_bytes=2097152
 fusion_setting.allow_private_base_url=false
 fusion_setting.allowed_base_url_domains=
 fusion_setting.allowed_base_url_ports=443
@@ -966,7 +1009,7 @@ Required admin behavior:
 | Fusion key page | new feature |
 | `POST /fusion` | compatibility alias |
 | `POST /v1/fusion/chat/completions` | compatibility alias |
-| Streaming | accepted as final-chunk SSE compatibility; not true incremental aggregation |
+| Streaming | SSE keepalive during candidate aggregation; pure text stream candidates use brief mode and early min-success completion; final Judge text deltas stream incrementally when the Judge upstream streams |
 | Agent tools | supported with `first_success` candidate tool-call selection |
 | User raw key in relay request | rejected |
 | Saved user key direct relay | rejected; only enabled Fusion configs can use saved keys |

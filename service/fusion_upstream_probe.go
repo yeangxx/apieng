@@ -51,7 +51,7 @@ func TestFusionUpstreamKey(ctx context.Context, request FusionUpstreamTestReques
 		Stream:    common.GetPointer(false),
 	}
 	client := fusionNoRedirectClient(request.HTTPClient)
-	result := executeFusionChatCall(ctx, nil, client, target, callRequest, time.Now(), 0)
+	result := executeFusionChatCall(ctx, nil, client, target, callRequest, time.Now(), 0, nil)
 	if result.Success {
 		return FusionUpstreamTestResult{
 			OK:      true,

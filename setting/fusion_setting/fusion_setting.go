@@ -15,26 +15,30 @@ const (
 )
 
 type FusionSetting struct {
-	Enabled                 bool     `json:"enabled"`
-	MaxKeysPerUser          int      `json:"max_keys_per_user"`
-	MaxConfigsPerUser       int      `json:"max_configs_per_user"`
-	MaxCandidatesPerConfig  int      `json:"max_candidates_per_config"`
-	MaxParallel             int      `json:"max_parallel"`
-	DefaultTimeoutMS        int      `json:"default_timeout_ms"`
-	MaxTimeoutMS            int      `json:"max_timeout_ms"`
-	ServiceModelName        string   `json:"service_model_name"`
-	BillingMode             string   `json:"billing_mode"`
-	BillingExpr             string   `json:"billing_expr"`
-	MinimumQuota            int      `json:"minimum_quota"`
-	ChargeFailedCandidates  bool     `json:"charge_failed_candidates"`
-	FailedCandidateQuota    int      `json:"failed_candidate_quota"`
-	KeyTestQuota            int      `json:"key_test_quota"`
-	MaxJudgeInputTokens     int      `json:"max_judge_input_tokens"`
-	MaxCandidateOutputChars int      `json:"max_candidate_output_chars"`
-	AllowPrivateBaseURL     bool     `json:"allow_private_base_url"`
-	AllowedBaseURLDomains   []string `json:"allowed_base_url_domains"`
-	AllowedBaseURLPorts     []int    `json:"allowed_base_url_ports"`
-	AllowedTokenGroups      []string `json:"allowed_token_groups"`
+	Enabled                      bool     `json:"enabled"`
+	MaxKeysPerUser               int      `json:"max_keys_per_user"`
+	MaxConfigsPerUser            int      `json:"max_configs_per_user"`
+	MaxCandidatesPerConfig       int      `json:"max_candidates_per_config"`
+	MaxParallel                  int      `json:"max_parallel"`
+	DefaultTimeoutMS             int      `json:"default_timeout_ms"`
+	MaxTimeoutMS                 int      `json:"max_timeout_ms"`
+	ServiceModelName             string   `json:"service_model_name"`
+	BillingMode                  string   `json:"billing_mode"`
+	BillingExpr                  string   `json:"billing_expr"`
+	MinimumQuota                 int      `json:"minimum_quota"`
+	ChargeFailedCandidates       bool     `json:"charge_failed_candidates"`
+	FailedCandidateQuota         int      `json:"failed_candidate_quota"`
+	KeyTestQuota                 int      `json:"key_test_quota"`
+	MaxJudgeInputTokens          int      `json:"max_judge_input_tokens"`
+	MaxCandidateOutputChars      int      `json:"max_candidate_output_chars"`
+	StreamCandidateBrief         bool     `json:"stream_candidate_brief"`
+	StreamCandidateMaxTokens     int      `json:"stream_candidate_max_tokens"`
+	ResponseStateTTLSeconds      int      `json:"response_state_ttl_seconds"`
+	ResponseStateMaxPayloadBytes int      `json:"response_state_max_payload_bytes"`
+	AllowPrivateBaseURL          bool     `json:"allow_private_base_url"`
+	AllowedBaseURLDomains        []string `json:"allowed_base_url_domains"`
+	AllowedBaseURLPorts          []int    `json:"allowed_base_url_ports"`
+	AllowedTokenGroups           []string `json:"allowed_token_groups"`
 }
 
 var fusionSetting = defaultFusionSetting()
@@ -45,26 +49,30 @@ func init() {
 
 func defaultFusionSetting() FusionSetting {
 	return FusionSetting{
-		Enabled:                 false,
-		MaxKeysPerUser:          10,
-		MaxConfigsPerUser:       10,
-		MaxCandidatesPerConfig:  4,
-		MaxParallel:             4,
-		DefaultTimeoutMS:        45000,
-		MaxTimeoutMS:            90000,
-		ServiceModelName:        "fusion-service",
-		BillingMode:             BillingModeExpr,
-		BillingExpr:             DefaultBillingExpression,
-		MinimumQuota:            1,
-		ChargeFailedCandidates:  false,
-		FailedCandidateQuota:    0,
-		KeyTestQuota:            1,
-		MaxJudgeInputTokens:     128000,
-		MaxCandidateOutputChars: 20000,
-		AllowPrivateBaseURL:     false,
-		AllowedBaseURLDomains:   []string{},
-		AllowedBaseURLPorts:     []int{443},
-		AllowedTokenGroups:      []string{},
+		Enabled:                      false,
+		MaxKeysPerUser:               10,
+		MaxConfigsPerUser:            10,
+		MaxCandidatesPerConfig:       4,
+		MaxParallel:                  4,
+		DefaultTimeoutMS:             45000,
+		MaxTimeoutMS:                 90000,
+		ServiceModelName:             "fusion-service",
+		BillingMode:                  BillingModeExpr,
+		BillingExpr:                  DefaultBillingExpression,
+		MinimumQuota:                 1,
+		ChargeFailedCandidates:       false,
+		FailedCandidateQuota:         0,
+		KeyTestQuota:                 1,
+		MaxJudgeInputTokens:          128000,
+		MaxCandidateOutputChars:      20000,
+		StreamCandidateBrief:         true,
+		StreamCandidateMaxTokens:     1024,
+		ResponseStateTTLSeconds:      86400,
+		ResponseStateMaxPayloadBytes: 2097152,
+		AllowPrivateBaseURL:          false,
+		AllowedBaseURLDomains:        []string{},
+		AllowedBaseURLPorts:          []int{443},
+		AllowedTokenGroups:           []string{},
 	}
 }
 
@@ -140,6 +148,22 @@ func GetFusionMaxJudgeInputTokens() int {
 
 func GetFusionMaxCandidateOutputChars() int {
 	return fusionSetting.MaxCandidateOutputChars
+}
+
+func ShouldFusionUseStreamCandidateBrief() bool {
+	return fusionSetting.StreamCandidateBrief
+}
+
+func GetFusionStreamCandidateMaxTokens() int {
+	return fusionSetting.StreamCandidateMaxTokens
+}
+
+func GetFusionResponseStateTTLSeconds() int {
+	return fusionSetting.ResponseStateTTLSeconds
+}
+
+func GetFusionResponseStateMaxPayloadBytes() int {
+	return fusionSetting.ResponseStateMaxPayloadBytes
 }
 
 func IsFusionPrivateBaseURLAllowed() bool {
