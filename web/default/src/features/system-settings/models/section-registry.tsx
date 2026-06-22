@@ -98,6 +98,12 @@ const MODELS_SECTIONS = [
               settings['fusion_setting.stream_candidate_brief'],
             stream_candidate_max_tokens:
               settings['fusion_setting.stream_candidate_max_tokens'],
+            result_cache_enabled:
+              settings['fusion_setting.result_cache_enabled'],
+            result_cache_ttl_seconds:
+              settings['fusion_setting.result_cache_ttl_seconds'],
+            result_cache_max_payload_bytes:
+              settings['fusion_setting.result_cache_max_payload_bytes'],
             response_state_ttl_seconds:
               settings['fusion_setting.response_state_ttl_seconds'],
             response_state_max_payload_bytes:

@@ -22,7 +22,7 @@ import {
   ERROR_MESSAGES,
   MODEL_FETCHABLE_TYPES,
 } from '../constants'
-import type { Channel } from '../types'
+import type { Channel, ChannelProtocolBinding } from '../types'
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
   advancedCustomConfigUsesRelativeUpstreamPath,
@@ -207,6 +207,19 @@ export const channelFormSchema = z
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
     upstream_model_update_ignored_models: z.string().optional(),
+    protocol_bindings: z
+      .array(
+        z.object({
+          id: z.number().optional(),
+          channel_id: z.number().optional(),
+          template_id: z.number(),
+          enabled: z.boolean(),
+          upstream_config: z.string().refine(isOptionalJsonObject, ERROR_MESSAGES.INVALID_JSON),
+          created_at: z.number().optional(),
+          updated_at: z.number().optional(),
+        })
+      )
+      .optional(),
   })
   .superRefine((data, ctx) => {
     if ([3, 8, 36, 45].includes(data.type) && !data.base_url?.trim()) {
@@ -346,6 +359,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
   advanced_custom: '',
+  protocol_bindings: [],
 }
 
 // ============================================================================
@@ -478,6 +492,7 @@ export function transformChannelToFormDefaults(
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
     upstream_model_update_ignored_models: upstreamModelUpdateIgnoredModels,
     advanced_custom: advancedCustom,
+    protocol_bindings: channel.protocol_bindings || [],
   }
 }
 
@@ -654,6 +669,7 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
     param_override: formData.param_override || null,
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
+    protocol_bindings: normalizeProtocolBindings(formData.protocol_bindings),
     other: formData.other || '',
   }
 
@@ -702,6 +718,7 @@ export function transformFormDataToUpdatePayload(
     param_override: formData.param_override || null,
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
+    protocol_bindings: normalizeProtocolBindings(formData.protocol_bindings),
     other: formData.other || '',
   }
 
@@ -729,6 +746,39 @@ export function transformFormDataToUpdatePayload(
   payload.header_override = formData.header_override || ''
 
   return payload
+}
+
+function normalizeProtocolBindings(
+  bindings:
+    | Array<
+        Partial<ChannelProtocolBinding> & {
+          template_id: number
+          enabled?: boolean
+          upstream_config?: string
+        }
+      >
+    | undefined
+): ChannelProtocolBinding[] {
+  if (!bindings?.length) return []
+  const seen = new Set<number>()
+  const normalized: ChannelProtocolBinding[] = []
+  bindings.forEach((binding) => {
+    const templateId = Number(binding.template_id)
+    if (!Number.isInteger(templateId) || templateId <= 0 || seen.has(templateId)) {
+      return
+    }
+    seen.add(templateId)
+    normalized.push({
+      id: Number(binding.id || 0),
+      channel_id: Number(binding.channel_id || 0),
+      template_id: templateId,
+      enabled: binding.enabled !== false,
+      upstream_config: binding.upstream_config?.trim() || '{}',
+      created_at: Number(binding.created_at || 0),
+      updated_at: Number(binding.updated_at || 0),
+    })
+  })
+  return normalized
 }
 
 // ============================================================================

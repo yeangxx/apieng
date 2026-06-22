@@ -32,52 +32,59 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
 import {
-  createAdminFusionUpstreamTemplate,
-  deleteAdminFusionUpstreamTemplate,
-  getAdminFusionUpstreamTemplates,
-  updateAdminFusionUpstreamTemplate,
-} from '../api'
+  createAdminUpstreamProtocolTemplate,
+  deleteAdminUpstreamProtocolTemplate,
+  getAdminUpstreamProtocolTemplates,
+  getUpstreamProtocolConverters,
+  updateAdminUpstreamProtocolTemplate,
+} from '@/features/upstream-protocol/api'
 import {
   FUSION_AUTH_TYPE_OPTIONS,
   FUSION_ERROR_MESSAGES,
-  FUSION_PROTOCOL_OPENAI_CHAT_COMPATIBLE,
   FUSION_SUCCESS_MESSAGES,
 } from '../constants'
 import type {
-  FusionUpstreamTemplate,
-  FusionUpstreamTemplatePayload,
-} from '../types'
+  UpstreamProtocolConverter,
+  UpstreamProtocolTemplate,
+  UpstreamProtocolTemplatePayload,
+} from '@/features/upstream-protocol/types'
 
-type TemplateFormState = FusionUpstreamTemplatePayload & {
+type TemplateFormState = UpstreamProtocolTemplatePayload & {
   id?: number
 }
 
-const templateQueryKey = ['fusion', 'admin-upstream-templates'] as const
+const templateQueryKey = ['upstream-protocol', 'admin-templates'] as const
+const converterQueryKey = ['upstream-protocol', 'converters'] as const
 
 function emptyTemplateState(): TemplateFormState {
   return {
     name: '',
     provider_label: '',
-    protocol: FUSION_PROTOCOL_OPENAI_CHAT_COMPATIBLE,
-    endpoint_path: '/v1/chat/completions',
+    protocol: '',
+    client_path: '',
+    endpoint_path: '',
     auth_type: 'bearer',
     auth_header: 'Authorization',
     auth_query_name: '',
     default_headers: '{}',
     default_query: '{}',
     default_body_overrides: '{}',
+    request_converter: 'none',
+    response_converter: 'none',
+    stream_converter: 'none',
     detect_rules: '[]',
     enabled: true,
     sort: 0,
   }
 }
 
-function stateFromTemplate(template: FusionUpstreamTemplate): TemplateFormState {
+function stateFromTemplate(template: UpstreamProtocolTemplate): TemplateFormState {
   return {
     id: template.id,
     name: template.name,
     provider_label: template.provider_label,
     protocol: template.protocol,
+    client_path: template.client_path,
     endpoint_path: template.endpoint_path,
     auth_type: template.auth_type,
     auth_header: template.auth_header,
@@ -88,6 +95,9 @@ function stateFromTemplate(template: FusionUpstreamTemplate): TemplateFormState 
       template.default_body_overrides,
       '{}'
     ),
+    request_converter: template.request_converter,
+    response_converter: template.response_converter,
+    stream_converter: template.stream_converter,
     detect_rules: formatJsonText(template.detect_rules, '[]'),
     enabled: template.enabled,
     sort: template.sort,
@@ -110,11 +120,19 @@ function prettyJsonText(value: string, fallback: string) {
   return JSON.stringify(JSON.parse(value.trim() || fallback), null, 2)
 }
 
-function templatePayload(state: TemplateFormState): FusionUpstreamTemplatePayload {
+function converterDisplayName(converter: UpstreamProtocolConverter): string {
+  if (converter.id === 'none') return converter.label
+  return `${converter.label} (${converter.id})`
+}
+
+function templatePayload(
+  state: TemplateFormState
+): UpstreamProtocolTemplatePayload {
   return {
     name: state.name.trim(),
     provider_label: state.provider_label.trim(),
-    protocol: state.protocol,
+    protocol: state.protocol.trim(),
+    client_path: state.client_path.trim(),
     endpoint_path: state.endpoint_path.trim(),
     auth_type: state.auth_type,
     auth_header: state.auth_header.trim(),
@@ -125,6 +143,9 @@ function templatePayload(state: TemplateFormState): FusionUpstreamTemplatePayloa
       state.default_body_overrides,
       '{}'
     ),
+    request_converter: state.request_converter || 'none',
+    response_converter: state.response_converter || 'none',
+    stream_converter: state.stream_converter || 'none',
     detect_rules: compactJsonText(state.detect_rules, '[]'),
     enabled: state.enabled,
     sort: Number(state.sort) || 0,
@@ -142,7 +163,7 @@ export function FusionUpstreamTemplateManager() {
   const templatesQuery = useQuery({
     queryKey: templateQueryKey,
     queryFn: async () => {
-      const result = await getAdminFusionUpstreamTemplates()
+      const result = await getAdminUpstreamProtocolTemplates()
       if (!result.success) {
         toast.error(
           result.message || t(FUSION_ERROR_MESSAGES.LOAD_TEMPLATES_FAILED)
@@ -153,9 +174,25 @@ export function FusionUpstreamTemplateManager() {
     },
   })
 
+  const convertersQuery = useQuery({
+    queryKey: converterQueryKey,
+    queryFn: async () => {
+      const result = await getUpstreamProtocolConverters()
+      if (!result.success) {
+        toast.error(result.message || t('Failed to load protocol converters'))
+        return []
+      }
+      return result.data?.items ?? []
+    },
+  })
+
   const templates = useMemo(
     () => templatesQuery.data ?? [],
     [templatesQuery.data]
+  )
+  const converters = useMemo(
+    () => convertersQuery.data ?? [],
+    [convertersQuery.data]
   )
 
   useEffect(() => {
@@ -170,9 +207,9 @@ export function FusionUpstreamTemplateManager() {
     mutationFn: async (state: TemplateFormState) => {
       const payload = templatePayload(state)
       if (state.id) {
-        return updateAdminFusionUpstreamTemplate(state.id, payload)
+        return updateAdminUpstreamProtocolTemplate(state.id, payload)
       }
-      return createAdminFusionUpstreamTemplate(payload)
+      return createAdminUpstreamProtocolTemplate(payload)
     },
     onSuccess: async (result) => {
       if (!result.success) {
@@ -191,7 +228,7 @@ export function FusionUpstreamTemplateManager() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: deleteAdminFusionUpstreamTemplate,
+    mutationFn: deleteAdminUpstreamProtocolTemplate,
     onSuccess: async (result) => {
       if (!result.success) {
         toast.error(
@@ -213,7 +250,7 @@ export function FusionUpstreamTemplateManager() {
     setFormState((current) => ({ ...current, [key]: value }))
   }
 
-  const selectTemplate = (template: FusionUpstreamTemplate) => {
+  const selectTemplate = (template: UpstreamProtocolTemplate) => {
     setSelectedId(template.id)
     setFormState(stateFromTemplate(template))
   }
@@ -243,6 +280,14 @@ export function FusionUpstreamTemplateManager() {
       toast.error(t('Name and provider label are required'))
       return
     }
+    if (!formState.protocol.trim()) {
+      toast.error(t('Protocol is required'))
+      return
+    }
+    if (!formState.client_path.trim().startsWith('/')) {
+      toast.error(t('Client path must start with /'))
+      return
+    }
     if (!formState.endpoint_path.trim().startsWith('/')) {
       toast.error(t('Endpoint path must start with /'))
       return
@@ -258,7 +303,7 @@ export function FusionUpstreamTemplateManager() {
 
   const deleteTemplate = () => {
     if (!formState.id) return
-    if (!window.confirm(t('Delete this Fusion upstream template?'))) return
+    if (!window.confirm(t('Delete this upstream protocol template?'))) return
     deleteMutation.mutate(formState.id)
   }
 
@@ -267,11 +312,11 @@ export function FusionUpstreamTemplateManager() {
       <div className='flex flex-wrap items-start justify-between gap-3'>
         <div>
           <h3 className='text-sm font-medium'>
-            {t('Fusion Upstream Templates')}
+            {t('Upstream Protocol Templates')}
           </h3>
           <p className='text-muted-foreground mt-1 text-sm'>
             {t(
-              'Configure upstream protocols, paths, headers, query parameters, body overrides, and detection rules.'
+              'Configure text protocol entry paths, upstream paths, headers, query parameters, body overrides, converters, and detection rules.'
             )}
           </p>
         </div>
@@ -322,18 +367,22 @@ export function FusionUpstreamTemplateManager() {
         </label>
         <label className='space-y-1.5'>
           <span className='text-sm font-medium'>{t('Protocol')}</span>
-          <NativeSelect
-            className='w-full'
+          <Input
             value={formState.protocol}
             onChange={(event) => setField('protocol', event.target.value)}
-          >
-            <NativeSelectOption value={FUSION_PROTOCOL_OPENAI_CHAT_COMPATIBLE}>
-              openai_chat_compatible
-            </NativeSelectOption>
-          </NativeSelect>
+            placeholder='openai_chat_compatible'
+          />
         </label>
         <label className='space-y-1.5'>
-          <span className='text-sm font-medium'>{t('Endpoint Path')}</span>
+          <span className='text-sm font-medium'>{t('Client Path')}</span>
+          <Input
+            value={formState.client_path}
+            onChange={(event) => setField('client_path', event.target.value)}
+            placeholder='/v1/chat/completions'
+          />
+        </label>
+        <label className='space-y-1.5'>
+          <span className='text-sm font-medium'>{t('Upstream Path')}</span>
           <Input
             value={formState.endpoint_path}
             onChange={(event) => setField('endpoint_path', event.target.value)}
@@ -374,6 +423,43 @@ export function FusionUpstreamTemplateManager() {
             />
           </label>
         </div>
+      </div>
+
+      <div className='grid gap-4 lg:grid-cols-3'>
+        {(
+          [
+            ['request_converter', 'Request Converter'],
+            ['response_converter', 'Response Converter'],
+            ['stream_converter', 'Stream Converter'],
+          ] as const
+        ).map(([key, label]) => (
+          <label key={key} className='space-y-1.5'>
+            <span className='text-sm font-medium'>{t(label)}</span>
+            <NativeSelect
+              className='w-full'
+              value={formState[key]}
+              onChange={(event) => setField(key, event.target.value)}
+              disabled={convertersQuery.isLoading}
+            >
+              {(converters.length > 0
+                ? converters
+                : [
+                    {
+                      id: 'none',
+                      label: 'None',
+                      direction: 'any',
+                      source: 'same',
+                      target: 'same',
+                    },
+                  ]
+              ).map((converter) => (
+                <NativeSelectOption key={converter.id} value={converter.id}>
+                  {converterDisplayName(converter)}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </label>
+        ))}
       </div>
 
       <div className='grid gap-4 lg:grid-cols-2'>

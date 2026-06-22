@@ -21,6 +21,7 @@ var channelsIDM map[int]*Channel                     // all channels include dis
 // channel2advancedCustomConfig caches parsed Advanced Custom (type 58) configs so
 // path-aware selection avoids re-parsing JSON per request. Refreshed on full sync.
 var channel2advancedCustomConfig map[int]*dto.AdvancedCustomConfig
+var channel2protocolClientPaths map[int][]string
 var channelSyncLock sync.RWMutex
 
 func InitChannelCache() {
@@ -29,15 +30,23 @@ func InitChannelCache() {
 	}
 	newChannelId2channel := make(map[int]*Channel)
 	newChannel2advancedCustomConfig := make(map[int]*dto.AdvancedCustomConfig)
+	newChannel2protocolClientPaths := make(map[int][]string)
 	var channels []*Channel
 	DB.Find(&channels)
+	channelIDs := make([]int, 0, len(channels))
 	for _, channel := range channels {
 		newChannelId2channel[channel.Id] = channel
+		channelIDs = append(channelIDs, channel.Id)
 		if channel.Type == constant.ChannelTypeAdvancedCustom {
 			if config := channel.GetOtherSettings().AdvancedCustom; config != nil {
 				newChannel2advancedCustomConfig[channel.Id] = config
 			}
 		}
+	}
+	if paths, err := GetChannelProtocolClientPaths(channelIDs); err == nil {
+		newChannel2protocolClientPaths = paths
+	} else {
+		common.SysError("failed to load channel protocol bindings: " + err.Error())
 	}
 	var abilities []*Ability
 	DB.Find(&abilities)
@@ -93,6 +102,7 @@ func InitChannelCache() {
 	}
 	channelsIDM = newChannelId2channel
 	channel2advancedCustomConfig = newChannel2advancedCustomConfig
+	channel2protocolClientPaths = newChannel2protocolClientPaths
 	channelSyncLock.Unlock()
 	common.SysLog("channels synced from database")
 }
@@ -202,9 +212,9 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 	return nil, errors.New("channel not found")
 }
 
-// filterChannelsByRequestPath restricts candidates by request path. Only Advanced
-// Custom (type 58) channels are path-checked: they are kept only when one of their
-// configured routes matches requestPath. All other channel types always pass.
+// filterChannelsByRequestPath restricts candidates by request path. Advanced
+// Custom routes and protocol template bindings are path-checked; channels without
+// either configuration keep the historical "all text paths pass" behavior.
 // When requestPath is empty (non-relay callers) filtering is skipped.
 // Caller must hold channelSyncLock (read lock). The cached slice is never mutated.
 func filterChannelsByRequestPath(channels []int, requestPath string) []int {
@@ -219,15 +229,41 @@ func filterChannelsByRequestPath(channels []int, requestPath string) []int {
 			filtered = append(filtered, channelId)
 			continue
 		}
-		if channel.Type != constant.ChannelTypeAdvancedCustom {
+		protocolPaths := channel2protocolClientPaths[channelId]
+		hasProtocolBinding := len(protocolPaths) > 0
+		if hasProtocolBinding && ChannelProtocolPathsMatch(protocolPaths, requestPath) {
 			filtered = append(filtered, channelId)
 			continue
 		}
 		if config := channel2advancedCustomConfig[channelId]; config != nil && config.SupportsPath(requestPath) {
 			filtered = append(filtered, channelId)
+			continue
+		}
+		if !hasProtocolBinding && channel.Type != constant.ChannelTypeAdvancedCustom {
+			filtered = append(filtered, channelId)
 		}
 	}
 	return filtered
+}
+
+func ChannelSupportsRequestPath(channel *Channel, requestPath string) bool {
+	if channel == nil {
+		return false
+	}
+	requestPath = strings.TrimSpace(requestPath)
+	if requestPath == "" {
+		return true
+	}
+	paths, err := GetChannelProtocolClientPaths([]int{channel.Id})
+	if err == nil && ChannelProtocolPathsMatch(paths[channel.Id], requestPath) {
+		return true
+	}
+	hasProtocolBinding := err == nil && len(paths[channel.Id]) > 0
+	if channel.Type == constant.ChannelTypeAdvancedCustom {
+		config := channel.GetOtherSettings().AdvancedCustom
+		return config != nil && config.SupportsPath(requestPath)
+	}
+	return !hasProtocolBinding
 }
 
 func CacheGetChannel(id int) (*Channel, error) {

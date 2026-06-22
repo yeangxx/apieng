@@ -284,6 +284,23 @@ func SetApiRouter(router *gin.Engine) {
 
 		RegisterFusionAPIRoutes(apiRouter)
 
+		upstreamProtocolRoute := apiRouter.Group("/upstream-protocol")
+		upstreamProtocolRoute.Use(middleware.UserAuth())
+		{
+			upstreamProtocolRoute.GET("/templates", controller.GetUpstreamProtocolTemplates)
+			upstreamProtocolRoute.GET("/converters", controller.GetUpstreamProtocolConverters)
+		}
+
+		upstreamProtocolAdminRoute := apiRouter.Group("/upstream-protocol/admin")
+		upstreamProtocolAdminRoute.Use(middleware.AdminAuth())
+		{
+			templateRoute := upstreamProtocolAdminRoute.Group("/templates")
+			templateRoute.GET("", controller.AdminGetUpstreamProtocolTemplates)
+			templateRoute.POST("", controller.AdminCreateUpstreamProtocolTemplate)
+			templateRoute.PUT("/:id", controller.AdminUpdateUpstreamProtocolTemplate)
+			templateRoute.DELETE("/:id", controller.AdminDeleteUpstreamProtocolTemplate)
+		}
+
 		usageRoute := apiRouter.Group("/usage")
 		usageRoute.Use(middleware.CORS(), middleware.CriticalRateLimit())
 		{

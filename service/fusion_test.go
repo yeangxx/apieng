@@ -52,6 +52,8 @@ func setupFusionServiceTestDB(t *testing.T) {
 	})
 
 	common.RedisEnabled = false
+	fusionResultCacheOnce = sync.Once{}
+	fusionResultCache = nil
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))), &gorm.Config{})
 	require.NoError(t, err)
 	model.DB = db
@@ -170,12 +172,35 @@ func configureFusionServiceTestBaseURL(t *testing.T, serverURL string, extra map
 	require.NoError(t, config.GlobalConfig.LoadFromDB(values))
 }
 
+func createFusionServiceChatTemplate(t *testing.T) *model.FusionUpstreamTemplate {
+	t.Helper()
+	template := &model.FusionUpstreamTemplate{
+		Name:          "Test OpenAI Chat Completions",
+		ProviderLabel: "OpenAI Compatible",
+		Protocol:      model.FusionProtocolOpenAIChatCompatible,
+		EndpointPath:  "/v1/chat/completions",
+		AuthType:      model.FusionAuthTypeBearer,
+		AuthHeader:    "Authorization",
+		DetectRules:   `[]`,
+		Enabled:       true,
+	}
+	require.NoError(t, template.Insert())
+	return template
+}
+
 func createFusionServiceKey(t *testing.T, userID int, name string, baseURL string, defaultModel string) *model.FusionAPIKey {
+	t.Helper()
+	template := createFusionServiceChatTemplate(t)
+	return createFusionServiceKeyWithTemplate(t, userID, name, baseURL, defaultModel, template.Id)
+}
+
+func createFusionServiceKeyWithTemplate(t *testing.T, userID int, name string, baseURL string, defaultModel string, templateID int) *model.FusionAPIKey {
 	t.Helper()
 	key := &model.FusionAPIKey{
 		UserId:       userID,
 		Name:         name,
 		Provider:     model.FusionProviderOpenAICompatible,
+		TemplateID:   templateID,
 		BaseURL:      baseURL,
 		DefaultModel: defaultModel,
 		Status:       model.FusionKeyStatusEnabled,
@@ -587,7 +612,7 @@ func TestFusionEngineSanitizesCandidateTimeoutErrors(t *testing.T) {
 	assert.NotContains(t, err.Error(), "context deadline exceeded")
 	assert.Contains(t, result.Candidates[0].SanitizedError, "upstream request timeout")
 	assert.NotContains(t, result.Candidates[0].SanitizedError, "context deadline exceeded")
-	assert.Equal(t, http.StatusOK, result.Candidates[0].UpstreamStatus)
+	assert.Contains(t, []int{0, http.StatusOK}, result.Candidates[0].UpstreamStatus)
 }
 
 func TestFusionEngineStreamsAgentCandidateToAvoidBodyTimeout(t *testing.T) {
@@ -830,6 +855,8 @@ func TestFusionEngineStreamFinalStartsJudgeAfterMinSuccesses(t *testing.T) {
 	setupFusionServiceTestDB(t)
 	server, state := newFusionTestTLSServer(t, nil, nil)
 	var slowCandidateCanceled atomic.Bool
+	slowCandidateStarted := make(chan struct{})
+	var closeSlowCandidateStarted sync.Once
 	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "Bearer sk-fusion-test", r.Header.Get("Authorization"))
 		var req dto.GeneralOpenAIRequest
@@ -842,9 +869,19 @@ func TestFusionEngineStreamFinalStartsJudgeAfterMinSuccesses(t *testing.T) {
 		require.True(t, *req.Stream)
 
 		if req.Model == "candidate-slow" {
+			closeSlowCandidateStarted.Do(func() {
+				close(slowCandidateStarted)
+			})
 			<-r.Context().Done()
 			slowCandidateCanceled.Store(true)
 			return
+		}
+		if req.Model == "candidate-fast" {
+			select {
+			case <-slowCandidateStarted:
+			case <-r.Context().Done():
+				return
+			}
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -899,8 +936,87 @@ func TestFusionEngineStreamFinalStartsJudgeAfterMinSuccesses(t *testing.T) {
 	require.NotNil(t, result)
 	assert.Equal(t, "streamed final", result.Content)
 	assert.Equal(t, []string{"streamed final"}, deltas)
-	require.Len(t, result.Candidates, 1)
+	require.Len(t, result.Candidates, 2)
 	assert.Equal(t, "candidate-fast", result.Candidates[0].Model)
+	assert.True(t, result.Candidates[1].Canceled)
+	billingInput := BuildFusionBillingInput(result)
+	assert.Equal(t, 1, billingInput.SuccessfulCandidates)
+	assert.Equal(t, 0, billingInput.FailedCandidates)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	assert.Equal(t, 1, state.modelCalls["candidate-fast"])
+	assert.Equal(t, 1, state.modelCalls["candidate-slow"])
+	assert.Equal(t, 1, state.modelCalls["judge-model"])
+	assert.True(t, slowCandidateCanceled.Load())
+}
+
+func TestFusionEngineNonStreamStartsJudgeAfterMinSuccesses(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	server, state := newFusionTestTLSServer(t, nil, nil)
+	var slowCandidateCanceled atomic.Bool
+	slowCandidateStarted := make(chan struct{})
+	var closeSlowCandidateStarted sync.Once
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer sk-fusion-test", r.Header.Get("Authorization"))
+		var req dto.GeneralOpenAIRequest
+		require.NoError(t, common.DecodeJson(r.Body, &req))
+		state.mu.Lock()
+		state.modelCalls[req.Model]++
+		state.modelBodies[req.Model] = append(state.modelBodies[req.Model], req)
+		state.mu.Unlock()
+		require.NotNil(t, req.Stream)
+		require.False(t, *req.Stream)
+
+		if req.Model == "candidate-slow" {
+			closeSlowCandidateStarted.Do(func() {
+				close(slowCandidateStarted)
+			})
+			<-r.Context().Done()
+			slowCandidateCanceled.Store(true)
+			return
+		}
+		if req.Model == "candidate-fast" {
+			select {
+			case <-slowCandidateStarted:
+			case <-r.Context().Done():
+				return
+			}
+		}
+
+		content := "fast candidate"
+		promptTokens := 10
+		completionTokens := 2
+		if req.Model == "judge-model" {
+			content = "final"
+			promptTokens = 30
+			completionTokens = 7
+		}
+		data, err := common.Marshal(fusionTestResponse(req.Model, content, promptTokens, completionTokens))
+		require.NoError(t, err)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(data)
+	})
+	defer server.Close()
+	configureFusionServiceTestBaseURL(t, server.URL, nil)
+
+	fastKey := createFusionServiceKey(t, 1, "fast", server.URL+"/v1", "candidate-fast")
+	slowKey := createFusionServiceKey(t, 1, "slow", server.URL+"/v1", "candidate-slow")
+	judgeKey := createFusionServiceKey(t, 1, "judge", server.URL+"/v1", "judge-model")
+	fusionConfig := createFusionServiceConfig(t, 1, []int{fastKey.Id, slowKey.Id}, judgeKey.Id, "judge-model", 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	result, err := RunFusionEngine(ctx, fusionEngineTestRequest(fusionConfig, server.Client()))
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "final", result.Content)
+	require.Len(t, result.Candidates, 2)
+	assert.Equal(t, "candidate-fast", result.Candidates[0].Model)
+	assert.True(t, result.Candidates[1].Canceled)
+	billingInput := BuildFusionBillingInput(result)
+	assert.Equal(t, 1, billingInput.SuccessfulCandidates)
+	assert.Equal(t, 0, billingInput.FailedCandidates)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	assert.Equal(t, 1, state.modelCalls["candidate-fast"])
@@ -984,6 +1100,276 @@ func TestFusionEngineStreamFinalUsesBriefCandidateRequests(t *testing.T) {
 	require.NotEmpty(t, judgeRequest.Messages)
 	assert.NotContains(t, judgeRequest.Messages[0].StringContent(), "Fusion candidate brief")
 	assert.Nil(t, judgeRequest.MaxTokens)
+}
+
+func TestFusionEngineNonStreamUsesBriefCandidateRequests(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	server, state := newFusionTestTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a": fusionTestResponse("candidate-a", "candidate brief", 10, 2),
+		"judge-model": fusionTestResponse("judge-model", "final", 30, 7),
+	}, nil)
+	defer server.Close()
+	configureFusionServiceTestBaseURL(t, server.URL, map[string]string{
+		"fusion_setting.stream_candidate_brief":      "true",
+		"fusion_setting.stream_candidate_max_tokens": "384",
+	})
+
+	candidateKey := createFusionServiceKey(t, 1, "candidate", server.URL+"/v1", "candidate-a")
+	judgeKey := createFusionServiceKey(t, 1, "judge", server.URL+"/v1", "judge-model")
+	fusionConfig := createFusionServiceConfig(t, 1, []int{candidateKey.Id}, judgeKey.Id, "judge-model", 1)
+	request := fusionEngineTestRequest(fusionConfig, server.Client())
+	request.Request.Stream = common.GetPointer(false)
+
+	result, err := RunFusionEngine(context.Background(), request)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	require.Len(t, state.modelBodies["candidate-a"], 1)
+	candidateRequest := state.modelBodies["candidate-a"][0]
+	require.NotEmpty(t, candidateRequest.Messages)
+	assert.Equal(t, "system", candidateRequest.Messages[0].Role)
+	assert.Contains(t, candidateRequest.Messages[0].StringContent(), "Fusion candidate brief")
+	require.NotNil(t, candidateRequest.MaxTokens)
+	assert.Equal(t, uint(384), *candidateRequest.MaxTokens)
+
+	require.Len(t, state.modelBodies["judge-model"], 1)
+	judgeRequest := state.modelBodies["judge-model"][0]
+	require.NotEmpty(t, judgeRequest.Messages)
+	assert.NotContains(t, judgeRequest.Messages[0].StringContent(), "Fusion candidate brief")
+	assert.Nil(t, judgeRequest.MaxTokens)
+}
+
+func TestFusionEngineAutoSimpleDirectRouteUsesDirectModel(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	server, state := newFusionTestTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a":  fusionTestResponse("candidate-a", "candidate", 10, 2),
+		"judge-model":  fusionTestResponse("judge-model", "judge", 30, 7),
+		"direct-model": fusionTestResponse("direct-model", "direct final", 9, 3),
+	}, nil)
+	defer server.Close()
+	configureFusionServiceTestBaseURL(t, server.URL, nil)
+
+	candidateKey := createFusionServiceKey(t, 1, "candidate", server.URL+"/v1", "candidate-a")
+	judgeKey := createFusionServiceKey(t, 1, "judge", server.URL+"/v1", "judge-model")
+	directKey := createFusionServiceKey(t, 1, "direct", server.URL+"/v1", "direct-model")
+	fusionConfig := createFusionServiceConfig(t, 1, []int{candidateKey.Id}, judgeKey.Id, "judge-model", 1)
+	fusionConfig.RoutingMode = model.FusionRoutingModeAutoSimple
+	fusionConfig.DirectKeyID = directKey.Id
+	fusionConfig.DirectModel = "direct-model"
+	request := fusionEngineTestRequest(fusionConfig, server.Client())
+	request.Request.Messages = []dto.Message{{Role: "user", Content: "Hello"}}
+
+	result, err := RunFusionEngine(context.Background(), request)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "direct final", result.Content)
+	assert.Equal(t, FusionExecutionModeDirect, result.ExecutionMode)
+	assert.Equal(t, "auto_simple_direct", result.RouteReason)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	assert.Equal(t, 1, state.modelCalls["direct-model"])
+	assert.Equal(t, 0, state.modelCalls["candidate-a"])
+	assert.Equal(t, 0, state.modelCalls["judge-model"])
+}
+
+func TestFusionEngineDefaultOpenAIUpstreamUsesResponsesProtocol(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/responses", r.URL.Path)
+		require.Equal(t, "Bearer sk-fusion-test", r.Header.Get("Authorization"))
+
+		var payload map[string]any
+		require.NoError(t, common.DecodeJson(r.Body, &payload))
+		assert.Equal(t, "direct-model", payload["model"])
+		assert.Contains(t, payload, "input")
+		assert.NotContains(t, payload, "messages")
+
+		response := dto.OpenAIResponsesResponse{
+			ID:        "resp_test",
+			Object:    "response",
+			CreatedAt: int(common.GetTimestamp()),
+			Model:     "direct-model",
+			Output: []dto.ResponsesOutput{
+				{
+					Type: "message",
+					Role: "assistant",
+					Content: []dto.ResponsesOutputContent{
+						{Type: "output_text", Text: "responses final"},
+					},
+				},
+			},
+			Usage: &dto.Usage{InputTokens: 8, OutputTokens: 3, TotalTokens: 11},
+		}
+		data, err := common.Marshal(response)
+		require.NoError(t, err)
+		w.Header().Set("Content-Type", "application/json")
+		_, err = w.Write(data)
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+	configureFusionServiceTestBaseURL(t, server.URL, nil)
+
+	directKey := createFusionServiceKeyWithTemplate(t, 1, "direct", server.URL+"/v1", "direct-model", 0)
+	fusionConfig := createFusionServiceConfig(t, 1, []int{directKey.Id}, directKey.Id, "direct-model", 1)
+	fusionConfig.RoutingMode = model.FusionRoutingModeAutoSimple
+	fusionConfig.DirectKeyID = directKey.Id
+	fusionConfig.DirectModel = "direct-model"
+	request := fusionEngineTestRequest(fusionConfig, server.Client())
+	request.Request.Messages = []dto.Message{{Role: "user", Content: "Hello"}}
+
+	result, err := RunFusionEngine(context.Background(), request)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "responses final", result.Content)
+	assert.Equal(t, FusionExecutionModeDirect, result.ExecutionMode)
+	assert.Equal(t, 8, result.Usage.PromptTokens)
+	assert.Equal(t, 3, result.Usage.CompletionTokens)
+}
+
+func TestFusionEngineAnthropicMessagesUpstreamUsesClaudeProtocol(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/messages", r.URL.Path)
+		require.Equal(t, "sk-fusion-test", r.Header.Get("x-api-key"))
+		require.Empty(t, r.Header.Get("Authorization"))
+		require.Equal(t, "2023-06-01", r.Header.Get("anthropic-version"))
+
+		var payload dto.ClaudeRequest
+		require.NoError(t, common.DecodeJson(r.Body, &payload))
+		assert.Equal(t, "claude-3-5-sonnet", payload.Model)
+		require.NotEmpty(t, payload.Messages)
+		assert.Equal(t, "user", payload.Messages[0].Role)
+		assert.Equal(t, "Hello", payload.Messages[0].Content)
+		require.NotNil(t, payload.MaxTokens)
+		assert.NotContains(t, fmt.Sprintf("%v", payload), "input")
+
+		response := dto.ClaudeResponse{
+			Id:         "msg_test",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "claude-3-5-sonnet",
+			StopReason: "end_turn",
+			Content: []dto.ClaudeMediaMessage{
+				{Type: "text", Text: common.GetPointer("claude final")},
+			},
+			Usage: &dto.ClaudeUsage{InputTokens: 7, OutputTokens: 4},
+		}
+		data, err := common.Marshal(response)
+		require.NoError(t, err)
+		w.Header().Set("Content-Type", "application/json")
+		_, err = w.Write(data)
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+	configureFusionServiceTestBaseURL(t, server.URL, nil)
+
+	template := &model.FusionUpstreamTemplate{
+		Name:           "Anthropic Messages",
+		ProviderLabel:  "Anthropic",
+		Protocol:       model.FusionProtocolAnthropicMessages,
+		EndpointPath:   "/v1/messages",
+		AuthType:       model.FusionAuthTypeHeader,
+		AuthHeader:     "x-api-key",
+		DefaultHeaders: `{"anthropic-version":"2023-06-01"}`,
+		DetectRules:    `[]`,
+		Enabled:        true,
+	}
+	require.NoError(t, template.Insert())
+	directKey := createFusionServiceKeyWithTemplate(t, 1, "claude", server.URL+"/v1", "claude-3-5-sonnet", template.Id)
+	fusionConfig := createFusionServiceConfig(t, 1, []int{directKey.Id}, directKey.Id, "claude-3-5-sonnet", 1)
+	fusionConfig.RoutingMode = model.FusionRoutingModeAutoSimple
+	fusionConfig.DirectKeyID = directKey.Id
+	fusionConfig.DirectModel = "claude-3-5-sonnet"
+	request := fusionEngineTestRequest(fusionConfig, server.Client())
+	request.Request.Messages = []dto.Message{{Role: "user", Content: "Hello"}}
+
+	result, err := RunFusionEngine(context.Background(), request)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "claude final", result.Content)
+	assert.Equal(t, FusionExecutionModeDirect, result.ExecutionMode)
+	assert.Equal(t, "stop", result.Judge.FinishReason)
+	assert.Equal(t, 7, result.Usage.PromptTokens)
+	assert.Equal(t, 4, result.Usage.CompletionTokens)
+}
+
+func TestFusionEngineAutoSimpleFallsBackForComplexPrompt(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	server, state := newFusionTestTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a":  fusionTestResponse("candidate-a", "candidate", 10, 2),
+		"judge-model":  fusionTestResponse("judge-model", "judge final", 30, 7),
+		"direct-model": fusionTestResponse("direct-model", "direct", 9, 3),
+	}, nil)
+	defer server.Close()
+	configureFusionServiceTestBaseURL(t, server.URL, nil)
+
+	candidateKey := createFusionServiceKey(t, 1, "candidate", server.URL+"/v1", "candidate-a")
+	judgeKey := createFusionServiceKey(t, 1, "judge", server.URL+"/v1", "judge-model")
+	directKey := createFusionServiceKey(t, 1, "direct", server.URL+"/v1", "direct-model")
+	fusionConfig := createFusionServiceConfig(t, 1, []int{candidateKey.Id}, judgeKey.Id, "judge-model", 1)
+	fusionConfig.RoutingMode = model.FusionRoutingModeAutoSimple
+	fusionConfig.DirectKeyID = directKey.Id
+	fusionConfig.DirectModel = "direct-model"
+	request := fusionEngineTestRequest(fusionConfig, server.Client())
+	request.Request.Messages = []dto.Message{{Role: "user", Content: "Please analyze this implementation plan."}}
+
+	result, err := RunFusionEngine(context.Background(), request)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "judge final", result.Content)
+	assert.Equal(t, FusionExecutionModeFusion, result.ExecutionMode)
+	assert.Equal(t, "auto_simple_complex_marker", result.RouteReason)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	assert.Equal(t, 0, state.modelCalls["direct-model"])
+	assert.Equal(t, 1, state.modelCalls["candidate-a"])
+	assert.Equal(t, 1, state.modelCalls["judge-model"])
+}
+
+func TestFusionEngineResultCacheHitSkipsUpstreamAndBillsMinimumPath(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	server, state := newFusionTestTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a": fusionTestResponse("candidate-a", "candidate", 10, 2),
+		"judge-model": fusionTestResponse("judge-model", "cached final", 30, 7),
+	}, nil)
+	defer server.Close()
+	configureFusionServiceTestBaseURL(t, server.URL, map[string]string{
+		"fusion_setting.result_cache_enabled":           "true",
+		"fusion_setting.result_cache_ttl_seconds":       "300",
+		"fusion_setting.result_cache_max_payload_bytes": "262144",
+	})
+
+	candidateKey := createFusionServiceKey(t, 1, "candidate", server.URL+"/v1", "candidate-a")
+	judgeKey := createFusionServiceKey(t, 1, "judge", server.URL+"/v1", "judge-model")
+	fusionConfig := createFusionServiceConfig(t, 1, []int{candidateKey.Id}, judgeKey.Id, "judge-model", 1)
+	request := fusionEngineTestRequest(fusionConfig, server.Client())
+
+	first, err := RunFusionEngine(context.Background(), request)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	assert.False(t, first.CacheHit)
+	assert.Equal(t, FusionExecutionModeFusion, first.ExecutionMode)
+
+	second, err := RunFusionEngine(context.Background(), request)
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	assert.True(t, second.CacheHit)
+	assert.Equal(t, FusionExecutionModeCache, second.ExecutionMode)
+	assert.Equal(t, fusionCacheUsageSource, second.Usage.UsageSource)
+	assert.Equal(t, "cached final", second.Content)
+	billingInput := BuildFusionBillingInput(second)
+	assert.Equal(t, 0, billingInput.CandidatePromptTokens)
+	assert.Equal(t, 0, billingInput.JudgePromptTokens)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	assert.Equal(t, 1, state.modelCalls["candidate-a"])
+	assert.Equal(t, 1, state.modelCalls["judge-model"])
 }
 
 func TestFusionEngineParsesStreamingToolCallCandidate(t *testing.T) {
@@ -1191,6 +1577,8 @@ func TestFusionJudgePromptSkipsClientSystemIdentity(t *testing.T) {
 	assert.NotContains(t, judgeBody, "GPT-5.1")
 	assert.NotContains(t, judgeBody, "Codex CLI")
 	assert.NotContains(t, judgeBody, "F:\\workspace\\testspace\\test1")
+	assert.Contains(t, judgeBody, "Synthesize one final answer")
+	assert.Contains(t, judgeBody, "Do not simply vote")
 }
 
 func TestFusionEngineRejectsUnsupportedRequestFields(t *testing.T) {

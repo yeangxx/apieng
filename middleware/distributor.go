@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -182,18 +183,8 @@ func isFusionChatCompletionsRequest(c *gin.Context, modelName string) bool {
 		strings.HasPrefix(strings.TrimSpace(modelName), "fusion:")
 }
 
-// channelSupportsRequestPath reports whether a channel can serve the request path.
-// Only Advanced Custom (type 58) channels are path-checked; all other channel types
-// always pass. A type-58 channel is usable only when one of its routes matches.
 func channelSupportsRequestPath(channel *model.Channel, requestPath string) bool {
-	if channel == nil {
-		return false
-	}
-	if channel.Type != constant.ChannelTypeAdvancedCustom {
-		return true
-	}
-	config := channel.GetOtherSettings().AdvancedCustom
-	return config != nil && config.SupportsPath(requestPath)
+	return model.ChannelSupportsRequestPath(channel, requestPath)
 }
 
 // getModelFromRequest 从请求中读取模型信息
@@ -463,9 +454,24 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelType, channel.Type)
 	common.SetContextKey(c, constant.ContextKeyChannelCreateTime, channel.CreatedTime)
 	common.SetContextKey(c, constant.ContextKeyChannelSetting, channel.GetSetting())
-	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, channel.GetOtherSettings())
+	channelOtherSettings := channel.GetOtherSettings()
 	paramOverride := channel.GetParamOverride()
 	headerOverride := channel.GetHeaderOverride()
+	protocolConfig, matchedProtocol, err := model.GetChannelProtocolResolvedConfig(channel.Id, c.Request.URL.Path)
+	if err != nil {
+		return types.NewError(err, types.ErrorCodeChannelParamOverrideInvalid, types.ErrOptionWithSkipRetry())
+	}
+	if matchedProtocol {
+		paramOverride = mergeProtocolBodyOverrides(protocolConfig.BodyOverrides, paramOverride)
+		headerOverride = mergeProtocolHeaderOverrides(protocolConfig.Headers, headerOverride)
+		advancedCustomConfig, err := buildProtocolAdvancedCustomConfig(protocolConfig)
+		if err != nil {
+			return types.NewError(err, types.ErrorCodeChannelParamOverrideInvalid, types.ErrOptionWithSkipRetry())
+		}
+		channelOtherSettings.AdvancedCustom = advancedCustomConfig
+		common.SetContextKey(c, constant.ContextKeyChannelAPITypeOverride, constant.APITypeAdvancedCustom)
+	}
+	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, channelOtherSettings)
 	if mergedParam, applied := service.ApplyChannelAffinityOverrideTemplate(c, paramOverride); applied {
 		paramOverride = mergedParam
 	}
@@ -515,6 +521,107 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		c.Set("bot_id", channel.Other)
 	}
 	return nil
+}
+
+func buildProtocolAdvancedCustomConfig(config model.ChannelProtocolResolvedConfig) (*dto.AdvancedCustomConfig, error) {
+	route := dto.AdvancedCustomRoute{
+		IncomingPath: strings.TrimSpace(config.ClientPath),
+		UpstreamPath: upstreamPathWithProtocolQuery(config.EndpointPath, config.Query),
+		Converter:    strings.TrimSpace(config.RequestConverter),
+		Auth:         protocolAdvancedCustomAuth(config),
+	}
+	if route.Converter == "" {
+		route.Converter = dto.AdvancedCustomConverterNone
+	}
+
+	advancedCustomConfig := &dto.AdvancedCustomConfig{Routes: []dto.AdvancedCustomRoute{route}}
+	err := advancedCustomConfig.Validate()
+	if err == nil {
+		return advancedCustomConfig, nil
+	}
+	if route.Converter == dto.AdvancedCustomConverterNone || !strings.Contains(err.Error(), "converter does not match incoming_path") {
+		return nil, err
+	}
+	route.Converter = dto.AdvancedCustomConverterNone
+	advancedCustomConfig = &dto.AdvancedCustomConfig{Routes: []dto.AdvancedCustomRoute{route}}
+	if err := advancedCustomConfig.Validate(); err != nil {
+		return nil, err
+	}
+	return advancedCustomConfig, nil
+}
+
+func protocolAdvancedCustomAuth(config model.ChannelProtocolResolvedConfig) *dto.AdvancedCustomRouteAuth {
+	switch strings.TrimSpace(config.AuthType) {
+	case model.UpstreamProtocolAuthTypeNone:
+		return &dto.AdvancedCustomRouteAuth{Type: dto.AdvancedCustomAuthTypeNone}
+	case model.UpstreamProtocolAuthTypeHeader:
+		return &dto.AdvancedCustomRouteAuth{
+			Type:  dto.AdvancedCustomAuthTypeHeader,
+			Name:  strings.TrimSpace(config.AuthHeader),
+			Value: "{api_key}",
+		}
+	case model.UpstreamProtocolAuthTypeQuery:
+		return &dto.AdvancedCustomRouteAuth{
+			Type:  dto.AdvancedCustomAuthTypeQuery,
+			Name:  strings.TrimSpace(config.AuthQueryName),
+			Value: "{api_key}",
+		}
+	default:
+		headerName := strings.TrimSpace(config.AuthHeader)
+		if headerName == "" {
+			headerName = "Authorization"
+		}
+		return &dto.AdvancedCustomRouteAuth{
+			Type:  dto.AdvancedCustomAuthTypeHeader,
+			Name:  headerName,
+			Value: "Bearer {api_key}",
+		}
+	}
+}
+
+func upstreamPathWithProtocolQuery(endpointPath string, query map[string]string) string {
+	endpointPath = strings.TrimSpace(endpointPath)
+	if len(query) == 0 {
+		return endpointPath
+	}
+	parsedURL, err := url.Parse(endpointPath)
+	if err != nil {
+		return endpointPath
+	}
+	values := parsedURL.Query()
+	for key, value := range query {
+		values.Set(key, value)
+	}
+	parsedURL.RawQuery = values.Encode()
+	return parsedURL.String()
+}
+
+func mergeProtocolBodyOverrides(protocol map[string]interface{}, channel map[string]interface{}) map[string]interface{} {
+	if len(protocol) == 0 {
+		return channel
+	}
+	merged := make(map[string]interface{}, len(protocol)+len(channel))
+	for key, value := range protocol {
+		merged[key] = value
+	}
+	for key, value := range channel {
+		merged[key] = value
+	}
+	return merged
+}
+
+func mergeProtocolHeaderOverrides(protocol map[string]string, channel map[string]interface{}) map[string]interface{} {
+	if len(protocol) == 0 {
+		return channel
+	}
+	merged := make(map[string]interface{}, len(protocol)+len(channel))
+	for key, value := range protocol {
+		merged[key] = value
+	}
+	for key, value := range channel {
+		merged[key] = value
+	}
+	return merged
 }
 
 // extractModelNameFromGeminiPath 从 Gemini API URL 路径中提取模型名

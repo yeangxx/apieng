@@ -44,6 +44,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import {
   Sheet,
   SheetClose,
@@ -56,7 +57,11 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
-import { FUSION_STRATEGY_SYNTHESIZE } from '../constants'
+import {
+  FUSION_ROUTING_MODE_ALWAYS,
+  FUSION_ROUTING_MODE_AUTO_SIMPLE,
+  FUSION_STRATEGY_SYNTHESIZE,
+} from '../constants'
 import {
   getFusionConfigFormSchema,
   type FusionAPIKey,
@@ -191,6 +196,9 @@ function buildDefaults(
     candidates: buildCandidateDefaults(keys, config),
     judge_key_id: config?.judge_key_id ?? firstOption?.keyId ?? 0,
     judge_model: config?.judge_model ?? firstOption?.model ?? '',
+    routing_mode: config?.routing_mode ?? FUSION_ROUTING_MODE_ALWAYS,
+    direct_key_id: config?.direct_key_id ?? 0,
+    direct_model: config?.direct_model ?? '',
     strategy: FUSION_STRATEGY_SYNTHESIZE,
     timeout_ms: config?.timeout_ms ?? 45000,
     max_parallel: config?.max_parallel ?? 4,
@@ -240,6 +248,14 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
   const judgeLabel =
     modelOptionByValue.get(judgeValue)?.label ??
     (judgeKeyID > 0 && judgeModel ? `#${judgeKeyID} / ${judgeModel}` : '-')
+  const watchedDirectKeyID = form.watch('direct_key_id')
+  const directKeyID =
+    typeof watchedDirectKeyID === 'number' ? watchedDirectKeyID : 0
+  const directModel = form.watch('direct_model')
+  const directValue =
+    directKeyID > 0 && directModel
+      ? modelOptionValue(directKeyID, directModel)
+      : ''
 
   const onSubmit = async (values: FusionConfigFormValues) => {
     const candidates = values.candidates.map((candidate) => ({
@@ -263,6 +279,9 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
       candidate_models: candidateModels,
       judge_key_id: values.judge_key_id,
       judge_model: values.judge_model.trim(),
+      routing_mode: values.routing_mode,
+      direct_key_id: values.direct_key_id,
+      direct_model: values.direct_model.trim(),
       strategy: values.strategy,
       timeout_ms: values.timeout_ms,
       max_parallel: values.max_parallel,
@@ -481,6 +500,86 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
                   </FormItem>
                 )}
               />
+              <div className='grid gap-4 sm:grid-cols-2'>
+                <FormField
+                  control={form.control}
+                  name='routing_mode'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Routing Mode')}</FormLabel>
+                      <FormControl>
+                        <NativeSelect
+                          className='w-full'
+                          value={field.value}
+                          onChange={(event) => field.onChange(event.target.value)}
+                        >
+                          <NativeSelectOption value={FUSION_ROUTING_MODE_ALWAYS}>
+                            {t('Always use Fusion')}
+                          </NativeSelectOption>
+                          <NativeSelectOption
+                            value={FUSION_ROUTING_MODE_AUTO_SIMPLE}
+                          >
+                            {t('Direct route simple prompts')}
+                          </NativeSelectOption>
+                        </NativeSelect>
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Auto mode sends only clearly simple text prompts to one direct model; other requests still use Fusion.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='direct_model'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Direct Model')}</FormLabel>
+                      <FormControl>
+                        <FusionJudgeModelPicker
+                          groups={modelGroups}
+                          value={directValue}
+                          onValueChange={(option) => {
+                            if (!option) return
+                            form.setValue('direct_key_id', option.keyId, {
+                              shouldDirty: true,
+                              shouldValidate: true,
+                            })
+                            field.onChange(option.model)
+                          }}
+                        />
+                      </FormControl>
+                      <div className='flex items-center justify-between gap-2'>
+                        <FormDescription>
+                          {t(
+                            'Leave empty to use the Judge model for direct routing.'
+                          )}
+                        </FormDescription>
+                        {(directKeyID > 0 || directModel) && (
+                          <Button
+                            type='button'
+                            variant='ghost'
+                            size='sm'
+                            onClick={() => {
+                              form.setValue('direct_key_id', 0, {
+                                shouldDirty: true,
+                                shouldValidate: true,
+                              })
+                              field.onChange('')
+                            }}
+                          >
+                            {t('Use Judge')}
+                          </Button>
+                        )}
+                      </div>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
               <div className='flex flex-wrap items-center gap-2'>
                 <StatusBadge
                   label={`${t('Selected candidates')}: ${selectedCandidates.length}`}

@@ -276,7 +276,9 @@ export async function handleTestChannel(
     success: boolean,
     responseTime?: number,
     error?: string,
-    errorCode?: string
+    errorCode?: string,
+    detectedConfig?: Record<string, unknown>,
+    detectedTemplateId?: number
   ) => void
 ): Promise<void> {
   const payload =
@@ -318,7 +320,14 @@ export async function handleTestChannel(
             : errorMsg,
         })
       }
-      onTestComplete?.(false, responseTime, errorMsg, response.error_code)
+      onTestComplete?.(
+        false,
+        responseTime,
+        errorMsg,
+        response.error_code,
+        response.detected_config,
+        response.detected_template_id
+      )
     }
   } catch (_error: unknown) {
     const err = _error as { response?: { data?: { message?: string } } }

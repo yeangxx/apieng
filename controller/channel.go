@@ -166,6 +166,11 @@ func GetAllChannels(c *gin.Context) {
 	for _, datum := range channelData {
 		clearChannelInfo(datum)
 	}
+	if err := model.AttachChannelProtocolBindings(channelData); err != nil {
+		common.SysError("failed to attach channel protocol bindings: " + err.Error())
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "获取渠道协议绑定失败，请稍后重试"})
+		return
+	}
 
 	countQuery := buildChannelListQuery(groupFilter, statusFilter, -1)
 	var results []struct {
@@ -372,6 +377,11 @@ func SearchChannels(c *gin.Context) {
 	for _, datum := range pagedData {
 		clearChannelInfo(datum)
 	}
+	if err := model.AttachChannelProtocolBindings(pagedData); err != nil {
+		common.SysError("failed to attach channel protocol bindings: " + err.Error())
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "获取渠道协议绑定失败，请稍后重试"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -398,6 +408,10 @@ func GetChannel(c *gin.Context) {
 	}
 	if channel != nil {
 		clearChannelInfo(channel)
+		if err := model.AttachChannelProtocolBindings([]*model.Channel{channel}); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

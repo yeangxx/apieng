@@ -439,6 +439,24 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case "fusion_setting.result_cache_ttl_seconds":
+		err = validatePositiveIntegerOption(option.Value.(string), "fusion result cache TTL seconds")
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "fusion_setting.result_cache_max_payload_bytes":
+		err = validatePositiveIntegerOption(option.Value.(string), "fusion result cache max payload bytes")
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 	case "fusion_setting.response_state_max_payload_bytes":
 		err = validatePositiveIntegerOption(option.Value.(string), "fusion response state max payload bytes")
 		if err != nil {

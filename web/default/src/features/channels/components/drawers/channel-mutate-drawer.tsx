@@ -165,6 +165,7 @@ import {
   ChannelBasicSection,
   ChannelEditorLoadingState,
   ChannelModelsSection,
+  ChannelProtocolBindingsSection,
 } from './sections'
 
 type ChannelMutateDrawerProps = {
@@ -223,7 +224,8 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.claude_beta_query ||
     values.upstream_model_update_check_enabled ||
     values.upstream_model_update_auto_sync_enabled ||
-    values.upstream_model_update_ignored_models?.trim()
+    values.upstream_model_update_ignored_models?.trim() ||
+    Boolean(values.protocol_bindings?.length)
   )
 }
 
@@ -2562,6 +2564,7 @@ export function ChannelMutateDrawer({
                         title={t('Routing & Overrides')}
                         icon={<Route className='h-4 w-4' />}
                       />
+                      <ChannelProtocolBindingsSection form={form} />
                       <div className='flex flex-col gap-4'>
                         <SubHeading
                           title={t('Routing Strategy')}

@@ -32,3 +32,12 @@ func GetDefaultEndpointInfo(et constant.EndpointType) (EndpointInfo, bool) {
 	info, ok := defaultEndpointInfoMap[et]
 	return info, ok
 }
+
+func GetEndpointTypeByPath(path string) (constant.EndpointType, bool) {
+	for endpointType, info := range defaultEndpointInfoMap {
+		if info.Path == path {
+			return endpointType, true
+		}
+	}
+	return "", false
+}

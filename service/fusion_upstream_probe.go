@@ -59,7 +59,7 @@ func TestFusionUpstreamKey(ctx context.Context, request FusionUpstreamTestReques
 			Message: "fusion upstream test succeeded",
 		}
 	}
-	detected := detectFusionUpstreamConfig(template, result.UpstreamStatus, result.SanitizedError)
+	detected := DetectUpstreamProtocolConfig(template, result.UpstreamStatus, result.SanitizedError)
 	return FusionUpstreamTestResult{
 		OK:             false,
 		Status:         result.UpstreamStatus,
@@ -68,13 +68,13 @@ func TestFusionUpstreamKey(ctx context.Context, request FusionUpstreamTestReques
 	}
 }
 
-func detectFusionUpstreamConfig(template *model.FusionUpstreamTemplate, status int, message string) model.FusionUpstreamConfig {
+func DetectUpstreamProtocolConfig(template *model.UpstreamProtocolTemplate, status int, message string) model.UpstreamProtocolConfig {
 	if template == nil {
-		return model.FusionUpstreamConfig{}
+		return model.UpstreamProtocolConfig{}
 	}
 	rules, err := template.GetDetectRules()
 	if err != nil {
-		return model.FusionUpstreamConfig{}
+		return model.UpstreamProtocolConfig{}
 	}
 	messageLower := strings.ToLower(message)
 	for _, rule := range rules {
@@ -86,7 +86,7 @@ func detectFusionUpstreamConfig(template *model.FusionUpstreamTemplate, status i
 		}
 		return rule.SuggestedConfig
 	}
-	return model.FusionUpstreamConfig{}
+	return model.UpstreamProtocolConfig{}
 }
 
 func fusionDetectStatusMatches(statusCodes []int, status int) bool {

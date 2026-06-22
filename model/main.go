@@ -280,7 +280,8 @@ func migrateDB() error {
 		&SubscriptionPreConsumeRecord{},
 		&CustomOAuthProvider{},
 		&UserOAuthBinding{},
-		&FusionUpstreamTemplate{},
+		&UpstreamProtocolTemplate{},
+		&ChannelProtocolBinding{},
 		&FusionAPIKey{},
 		&FusionConfig{},
 		&FusionResponseState{},
@@ -289,7 +290,7 @@ func migrateDB() error {
 	if err != nil {
 		return err
 	}
-	if _, err := EnsureDefaultFusionUpstreamTemplate(); err != nil {
+	if _, err := EnsureDefaultUpstreamProtocolTemplate(); err != nil {
 		return err
 	}
 	if common.UsingSQLite {
@@ -336,7 +337,8 @@ func migrateDBFast() error {
 		{&SubscriptionPreConsumeRecord{}, "SubscriptionPreConsumeRecord"},
 		{&CustomOAuthProvider{}, "CustomOAuthProvider"},
 		{&UserOAuthBinding{}, "UserOAuthBinding"},
-		{&FusionUpstreamTemplate{}, "FusionUpstreamTemplate"},
+		{&UpstreamProtocolTemplate{}, "UpstreamProtocolTemplate"},
+		{&ChannelProtocolBinding{}, "ChannelProtocolBinding"},
 		{&FusionAPIKey{}, "FusionAPIKey"},
 		{&FusionConfig{}, "FusionConfig"},
 		{&FusionResponseState{}, "FusionResponseState"},
@@ -374,7 +376,7 @@ func migrateDBFast() error {
 			return err
 		}
 	}
-	if _, err := EnsureDefaultFusionUpstreamTemplate(); err != nil {
+	if _, err := EnsureDefaultUpstreamProtocolTemplate(); err != nil {
 		return err
 	}
 	common.SysLog("database migrated")

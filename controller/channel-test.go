@@ -43,16 +43,87 @@ type testResult struct {
 	newAPIError *types.NewAPIError
 }
 
+func detectChannelProtocolConfig(channel *model.Channel, requestPath string, status int, message string) (map[string]interface{}, int) {
+	if channel == nil || strings.TrimSpace(requestPath) == "" || strings.TrimSpace(message) == "" {
+		return nil, 0
+	}
+	bindings, err := model.GetChannelProtocolBindings(channel.Id)
+	if err != nil {
+		return nil, 0
+	}
+	for _, binding := range bindings {
+		if !binding.Enabled {
+			continue
+		}
+		template, err := model.GetEnabledUpstreamProtocolTemplateByID(binding.TemplateID)
+		if err != nil {
+			continue
+		}
+		if !model.UpstreamProtocolPathMatches(template.ClientPath, requestPath) {
+			continue
+		}
+		detected := service.DetectUpstreamProtocolConfig(template, status, message)
+		return fusionUpstreamConfigToMap(detected), binding.TemplateID
+	}
+	return nil, 0
+}
+
+func channelSingleProtocolEndpointType(channel *model.Channel) string {
+	if channel == nil || channel.Id <= 0 {
+		return ""
+	}
+	bindings, err := model.GetChannelProtocolBindings(channel.Id)
+	if err != nil {
+		return ""
+	}
+	var selected constant.EndpointType
+	for _, binding := range bindings {
+		if !binding.Enabled {
+			continue
+		}
+		template, err := model.GetEnabledUpstreamProtocolTemplateByID(binding.TemplateID)
+		if err != nil {
+			continue
+		}
+		endpointType, ok := common.GetEndpointTypeByPath(template.ClientPath)
+		if !ok {
+			continue
+		}
+		if selected == "" {
+			selected = endpointType
+			continue
+		}
+		if selected != endpointType {
+			return ""
+		}
+	}
+	return string(selected)
+}
+
+func isImageGenerationTestModel(modelName string) bool {
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	return strings.HasPrefix(modelName, "gpt-image-") ||
+		strings.HasPrefix(modelName, "dall-e") ||
+		strings.Contains(modelName, "image-generation") ||
+		strings.Contains(modelName, "seedream")
+}
+
 func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointType string) string {
 	normalized := strings.TrimSpace(endpointType)
 	if normalized != "" {
 		return normalized
+	}
+	if isImageGenerationTestModel(modelName) {
+		return string(constant.EndpointTypeImageGeneration)
 	}
 	if strings.HasSuffix(modelName, ratio_setting.CompactModelSuffix) {
 		return string(constant.EndpointTypeOpenAIResponseCompact)
 	}
 	if channel != nil && channel.Type == constant.ChannelTypeCodex {
 		return string(constant.EndpointTypeOpenAIResponse)
+	}
+	if protocolEndpoint := channelSingleProtocolEndpointType(channel); protocolEndpoint != "" {
+		return protocolEndpoint
 	}
 	return normalized
 }
@@ -771,6 +842,15 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 		}
 	}
 
+	if isImageGenerationTestModel(model) {
+		return &dto.ImageRequest{
+			Model:  model,
+			Prompt: "a cute cat",
+			N:      lo.ToPtr(uint(1)),
+			Size:   "1024x1024",
+		}
+	}
+
 	// 先判断是否为 Embedding 模型
 	if strings.Contains(strings.ToLower(model), "embedding") ||
 		strings.HasPrefix(model, "m3e") ||
@@ -867,6 +947,16 @@ func TestChannel(c *gin.Context) {
 		if result.newAPIError != nil {
 			resp["error_code"] = result.newAPIError.GetErrorCode()
 		}
+		status := 0
+		if result.newAPIError != nil {
+			status = result.newAPIError.StatusCode
+		}
+		if result.context != nil && result.context.Request != nil && result.context.Request.URL != nil {
+			if detectedConfig, templateID := detectChannelProtocolConfig(channel, result.context.Request.URL.Path, status, result.localErr.Error()); len(detectedConfig) > 0 {
+				resp["detected_config"] = detectedConfig
+				resp["detected_template_id"] = templateID
+			}
+		}
 		c.JSON(http.StatusOK, resp)
 		return
 	}
@@ -875,12 +965,19 @@ func TestChannel(c *gin.Context) {
 	go channel.UpdateResponseTime(milliseconds)
 	consumedTime := float64(milliseconds) / 1000.0
 	if result.newAPIError != nil {
-		c.JSON(http.StatusOK, gin.H{
+		resp := gin.H{
 			"success":    false,
 			"message":    result.newAPIError.Error(),
 			"time":       consumedTime,
 			"error_code": result.newAPIError.GetErrorCode(),
-		})
+		}
+		if result.context != nil && result.context.Request != nil && result.context.Request.URL != nil {
+			if detectedConfig, templateID := detectChannelProtocolConfig(channel, result.context.Request.URL.Path, result.newAPIError.StatusCode, result.newAPIError.Error()); len(detectedConfig) > 0 {
+				resp["detected_config"] = detectedConfig
+				resp["detected_template_id"] = templateID
+			}
+		}
+		c.JSON(http.StatusOK, resp)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{

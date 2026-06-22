@@ -44,6 +44,7 @@ type FusionUpstreamTemplateRequest struct {
 	Name                 string `json:"name"`
 	ProviderLabel        string `json:"provider_label"`
 	Protocol             string `json:"protocol"`
+	ClientPath           string `json:"client_path"`
 	EndpointPath         string `json:"endpoint_path"`
 	AuthType             string `json:"auth_type"`
 	AuthHeader           string `json:"auth_header"`
@@ -51,6 +52,9 @@ type FusionUpstreamTemplateRequest struct {
 	DefaultHeaders       string `json:"default_headers"`
 	DefaultQuery         string `json:"default_query"`
 	DefaultBodyOverrides string `json:"default_body_overrides"`
+	RequestConverter     string `json:"request_converter"`
+	ResponseConverter    string `json:"response_converter"`
+	StreamConverter      string `json:"stream_converter"`
 	DetectRules          string `json:"detect_rules"`
 	Enabled              bool   `json:"enabled"`
 	Sort                 int    `json:"sort"`
@@ -61,6 +65,7 @@ type FusionUpstreamTemplateResponse struct {
 	Name                 string `json:"name"`
 	ProviderLabel        string `json:"provider_label"`
 	Protocol             string `json:"protocol"`
+	ClientPath           string `json:"client_path"`
 	EndpointPath         string `json:"endpoint_path"`
 	AuthType             string `json:"auth_type"`
 	AuthHeader           string `json:"auth_header"`
@@ -68,6 +73,9 @@ type FusionUpstreamTemplateResponse struct {
 	DefaultHeaders       string `json:"default_headers"`
 	DefaultQuery         string `json:"default_query"`
 	DefaultBodyOverrides string `json:"default_body_overrides"`
+	RequestConverter     string `json:"request_converter"`
+	ResponseConverter    string `json:"response_converter"`
+	StreamConverter      string `json:"stream_converter"`
 	DetectRules          string `json:"detect_rules"`
 	Enabled              bool   `json:"enabled"`
 	Sort                 int    `json:"sort"`
@@ -100,6 +108,9 @@ type FusionConfigCreateRequest struct {
 	CandidateModels map[string]string       `json:"candidate_models"`
 	JudgeKeyID      int                     `json:"judge_key_id"`
 	JudgeModel      string                  `json:"judge_model"`
+	RoutingMode     string                  `json:"routing_mode"`
+	DirectKeyID     int                     `json:"direct_key_id"`
+	DirectModel     string                  `json:"direct_model"`
 	Strategy        string                  `json:"strategy"`
 	TimeoutMS       int                     `json:"timeout_ms"`
 	MaxParallel     int                     `json:"max_parallel"`
@@ -121,6 +132,9 @@ type FusionConfigResponse struct {
 	CandidateModels map[string]string       `json:"candidate_models"`
 	JudgeKeyID      int                     `json:"judge_key_id"`
 	JudgeModel      string                  `json:"judge_model"`
+	RoutingMode     string                  `json:"routing_mode"`
+	DirectKeyID     int                     `json:"direct_key_id"`
+	DirectModel     string                  `json:"direct_model"`
 	Strategy        string                  `json:"strategy"`
 	TimeoutMS       int                     `json:"timeout_ms"`
 	MaxParallel     int                     `json:"max_parallel"`

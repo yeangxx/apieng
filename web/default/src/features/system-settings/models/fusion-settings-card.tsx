@@ -96,6 +96,9 @@ const fusionSettingsSchema = z.object({
     max_candidate_output_chars: z.coerce.number().int().min(1),
     stream_candidate_brief: z.boolean(),
     stream_candidate_max_tokens: z.coerce.number().int().min(1),
+    result_cache_enabled: z.boolean(),
+    result_cache_ttl_seconds: z.coerce.number().int().min(1),
+    result_cache_max_payload_bytes: z.coerce.number().int().min(1),
     response_state_ttl_seconds: z.coerce.number().int().min(1),
     response_state_max_payload_bytes: z.coerce.number().int().min(1),
     allow_private_base_url: z.boolean(),
@@ -126,6 +129,9 @@ type FlatFusionSettings = {
   'fusion_setting.max_candidate_output_chars': number
   'fusion_setting.stream_candidate_brief': boolean
   'fusion_setting.stream_candidate_max_tokens': number
+  'fusion_setting.result_cache_enabled': boolean
+  'fusion_setting.result_cache_ttl_seconds': number
+  'fusion_setting.result_cache_max_payload_bytes': number
   'fusion_setting.response_state_ttl_seconds': number
   'fusion_setting.response_state_max_payload_bytes': number
   'fusion_setting.allow_private_base_url': boolean
@@ -182,6 +188,11 @@ function flattenFusionSettings(
     'fusion_setting.stream_candidate_brief': settings.stream_candidate_brief,
     'fusion_setting.stream_candidate_max_tokens':
       settings.stream_candidate_max_tokens,
+    'fusion_setting.result_cache_enabled': settings.result_cache_enabled,
+    'fusion_setting.result_cache_ttl_seconds':
+      settings.result_cache_ttl_seconds,
+    'fusion_setting.result_cache_max_payload_bytes':
+      settings.result_cache_max_payload_bytes,
     'fusion_setting.response_state_ttl_seconds':
       settings.response_state_ttl_seconds,
     'fusion_setting.response_state_max_payload_bytes':
@@ -463,10 +474,33 @@ export function FusionSettingsCard(props: FusionSettingsCardProps) {
             render={({ field }) => (
               <SettingsSwitchItem>
                 <SettingsSwitchContent>
-                  <FormLabel>{t('Stream Candidate Brief Mode')}</FormLabel>
+                  <FormLabel>{t('Candidate Brief Mode')}</FormLabel>
                   <FormDescription>
                     {t(
-                      'For text streaming Fusion calls, ask candidates for short briefs and let Judge generate the final answer.'
+                      'For text Fusion calls, ask candidates for short briefs and let Judge generate the final answer.'
+                    )}
+                  </FormDescription>
+                </SettingsSwitchContent>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </SettingsSwitchItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='fusion_setting.result_cache_enabled'
+            render={({ field }) => (
+              <SettingsSwitchItem>
+                <SettingsSwitchContent>
+                  <FormLabel>{t('Fusion Result Cache')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Cache exact non-streaming text Fusion results. Streaming, tool, and multimodal requests are never cached.'
                     )}
                   </FormDescription>
                 </SettingsSwitchContent>
@@ -531,6 +565,9 @@ export function FusionSettingsCard(props: FusionSettingsCardProps) {
                       min={1}
                     />
                   </FormControl>
+                  <FormDescription>
+                    {t('For quality and cost, prefer 2-3 similarly strong models.')}
+                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -633,7 +670,43 @@ export function FusionSettingsCard(props: FusionSettingsCardProps) {
               name='fusion_setting.stream_candidate_max_tokens'
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>{t('Stream Candidate Max Tokens')}</FormLabel>
+                  <FormLabel>{t('Candidate Brief Max Tokens')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      value={Number(field.value ?? 0)}
+                      type='number'
+                      min={1}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='fusion_setting.result_cache_ttl_seconds'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Result Cache TTL (s)')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      value={Number(field.value ?? 0)}
+                      type='number'
+                      min={1}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='fusion_setting.result_cache_max_payload_bytes'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Result Cache Max Bytes')}</FormLabel>
                   <FormControl>
                     <Input
                       {...field}

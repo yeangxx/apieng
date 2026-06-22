@@ -20,7 +20,11 @@ import { z } from 'zod'
 
 import {
   FUSION_KEY_STATUS,
+  FUSION_PROTOCOL_ANTHROPIC_MESSAGES,
   FUSION_PROTOCOL_OPENAI_CHAT_COMPATIBLE,
+  FUSION_PROTOCOL_OPENAI_RESPONSES,
+  FUSION_ROUTING_MODE_ALWAYS,
+  FUSION_ROUTING_MODE_AUTO_SIMPLE,
   FUSION_STRATEGY_SYNTHESIZE,
 } from './constants'
 
@@ -62,6 +66,7 @@ export const fusionUpstreamTemplateSchema = z.object({
   name: z.string(),
   provider_label: z.string(),
   protocol: z.string(),
+  client_path: z.string().default(''),
   endpoint_path: z.string(),
   auth_type: z.string(),
   auth_header: z.string(),
@@ -69,6 +74,9 @@ export const fusionUpstreamTemplateSchema = z.object({
   default_headers: z.string().default('{}'),
   default_query: z.string().default('{}'),
   default_body_overrides: z.string().default('{}'),
+  request_converter: z.string().default('none'),
+  response_converter: z.string().default('none'),
+  stream_converter: z.string().default('none'),
   detect_rules: z.string().default('[]'),
   enabled: z.boolean(),
   sort: z.number(),
@@ -86,6 +94,11 @@ export const fusionConfigSchema = z.object({
   candidate_models: z.record(z.string(), z.string()).default({}),
   judge_key_id: z.number(),
   judge_model: z.string(),
+  routing_mode: z
+    .enum([FUSION_ROUTING_MODE_ALWAYS, FUSION_ROUTING_MODE_AUTO_SIMPLE])
+    .default(FUSION_ROUTING_MODE_ALWAYS),
+  direct_key_id: z.number().default(0),
+  direct_model: z.string().default(''),
   strategy: z.string(),
   timeout_ms: z.number(),
   max_parallel: z.number(),
@@ -179,6 +192,12 @@ export const getFusionConfigFormSchema = (t: (key: string) => string) =>
         .int()
         .positive(t('Judge key is required')),
       judge_model: z.string().trim().min(1, t('Judge model is required')),
+      routing_mode: z.enum([
+        FUSION_ROUTING_MODE_ALWAYS,
+        FUSION_ROUTING_MODE_AUTO_SIMPLE,
+      ]),
+      direct_key_id: z.coerce.number().int().min(0),
+      direct_model: z.string().trim(),
       strategy: z.literal(FUSION_STRATEGY_SYNTHESIZE),
       timeout_ms: z.coerce.number().int().min(1000),
       max_parallel: z.coerce.number().int().min(1),
@@ -225,6 +244,7 @@ export type FusionUpstreamTemplatePayload = {
   name: string
   provider_label: string
   protocol: string
+  client_path: string
   endpoint_path: string
   auth_type: string
   auth_header: string
@@ -232,6 +252,9 @@ export type FusionUpstreamTemplatePayload = {
   default_headers: string
   default_query: string
   default_body_overrides: string
+  request_converter: string
+  response_converter: string
+  stream_converter: string
   detect_rules: string
   enabled: boolean
   sort: number
@@ -254,7 +277,16 @@ export const getFusionUpstreamTemplateFormSchema = (
       .trim()
       .min(1, t('Provider label is required'))
       .max(80),
-    protocol: z.literal(FUSION_PROTOCOL_OPENAI_CHAT_COMPATIBLE),
+    protocol: z.enum([
+      FUSION_PROTOCOL_OPENAI_RESPONSES,
+      FUSION_PROTOCOL_OPENAI_CHAT_COMPATIBLE,
+      FUSION_PROTOCOL_ANTHROPIC_MESSAGES,
+    ]),
+    client_path: z
+      .string()
+      .trim()
+      .min(1, t('Client path is required'))
+      .refine((value) => value.startsWith('/'), t('Client path must start with /')),
     endpoint_path: z
       .string()
       .trim()
@@ -268,6 +300,9 @@ export const getFusionUpstreamTemplateFormSchema = (
     default_body_overrides: z
       .string()
       .refine(isJsonObject, t('Enter a JSON object')),
+    request_converter: z.string(),
+    response_converter: z.string(),
+    stream_converter: z.string(),
     detect_rules: z.string().refine(isJsonArray, t('Enter a JSON array')),
     enabled: z.boolean(),
     sort: z.coerce.number().int(),
@@ -284,6 +319,9 @@ export type FusionConfigPayload = {
   candidate_models: Record<string, string>
   judge_key_id: number
   judge_model: string
+  routing_mode: string
+  direct_key_id: number
+  direct_model: string
   strategy: string
   timeout_ms: number
   max_parallel: number

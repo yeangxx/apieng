@@ -4941,6 +4941,21 @@
     "Zero retention": "零数据保留",
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Routing Mode": "路由模式",
+    "Always use Fusion": "始终使用 Fusion",
+    "Direct route simple prompts": "简单请求直连",
+    "Auto mode sends only clearly simple text prompts to one direct model; other requests still use Fusion.": "自动模式只会将明确简单的文本请求发送到一个直连模型，其他请求仍然使用 Fusion。",
+    "Direct Model": "直连模型",
+    "Leave empty to use the Judge model for direct routing.": "留空则使用 Judge 模型进行直连路由。",
+    "Use Judge": "使用 Judge",
+    "Candidate Brief Mode": "候选简报模式",
+    "For text Fusion calls, ask candidates for short briefs and let Judge generate the final answer.": "对于文本 Fusion 调用，让候选模型先生成简短要点，再由 Judge 生成最终答案。",
+    "Fusion Result Cache": "Fusion 结果缓存",
+    "Cache exact non-streaming text Fusion results. Streaming, tool, and multimodal requests are never cached.": "缓存完全相同的非流式文本 Fusion 结果。流式、工具和多模态请求不会缓存。",
+    "For quality and cost, prefer 2-3 similarly strong models.": "为兼顾质量和成本，建议使用 2-3 个能力接近的强模型。",
+    "Candidate Brief Max Tokens": "候选简报最大 Tokens",
+    "Result Cache TTL (s)": "结果缓存 TTL（秒）",
+    "Result Cache Max Bytes": "结果缓存最大字节数"
   }
 }

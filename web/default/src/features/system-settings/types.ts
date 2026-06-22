@@ -208,6 +208,9 @@ export type ModelSettings = {
   'fusion_setting.max_candidate_output_chars': number
   'fusion_setting.stream_candidate_brief': boolean
   'fusion_setting.stream_candidate_max_tokens': number
+  'fusion_setting.result_cache_enabled': boolean
+  'fusion_setting.result_cache_ttl_seconds': number
+  'fusion_setting.result_cache_max_payload_bytes': number
   'fusion_setting.response_state_ttl_seconds': number
   'fusion_setting.response_state_max_payload_bytes': number
   'fusion_setting.allow_private_base_url': boolean

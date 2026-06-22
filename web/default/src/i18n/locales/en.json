@@ -4941,6 +4941,21 @@
     "Zero retention": "Zero retention",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Routing Mode": "Routing Mode",
+    "Always use Fusion": "Always use Fusion",
+    "Direct route simple prompts": "Direct route simple prompts",
+    "Auto mode sends only clearly simple text prompts to one direct model; other requests still use Fusion.": "Auto mode sends only clearly simple text prompts to one direct model; other requests still use Fusion.",
+    "Direct Model": "Direct Model",
+    "Leave empty to use the Judge model for direct routing.": "Leave empty to use the Judge model for direct routing.",
+    "Use Judge": "Use Judge",
+    "Candidate Brief Mode": "Candidate Brief Mode",
+    "For text Fusion calls, ask candidates for short briefs and let Judge generate the final answer.": "For text Fusion calls, ask candidates for short briefs and let Judge generate the final answer.",
+    "Fusion Result Cache": "Fusion Result Cache",
+    "Cache exact non-streaming text Fusion results. Streaming, tool, and multimodal requests are never cached.": "Cache exact non-streaming text Fusion results. Streaming, tool, and multimodal requests are never cached.",
+    "For quality and cost, prefer 2-3 similarly strong models.": "For quality and cost, prefer 2-3 similarly strong models.",
+    "Candidate Brief Max Tokens": "Candidate Brief Max Tokens",
+    "Result Cache TTL (s)": "Result Cache TTL (s)",
+    "Result Cache Max Bytes": "Result Cache Max Bytes"
   }
 }

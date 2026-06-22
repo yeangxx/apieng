@@ -4941,6 +4941,21 @@
     "Zero retention": "Aucune rétention",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Routing Mode": "Mode de routage",
+    "Always use Fusion": "Toujours utiliser Fusion",
+    "Direct route simple prompts": "Router directement les prompts simples",
+    "Auto mode sends only clearly simple text prompts to one direct model; other requests still use Fusion.": "Le mode auto envoie uniquement les prompts texte clairement simples vers un mod?le direct ; les autres requ?tes utilisent toujours Fusion.",
+    "Direct Model": "Mod?le direct",
+    "Leave empty to use the Judge model for direct routing.": "Laissez vide pour utiliser le mod?le Judge pour le routage direct.",
+    "Use Judge": "Utiliser Judge",
+    "Candidate Brief Mode": "Mode r?sum? candidat",
+    "For text Fusion calls, ask candidates for short briefs and let Judge generate the final answer.": "Pour les appels Fusion texte, demandez aux candidats de courts r?sum?s et laissez Judge g?n?rer la r?ponse finale.",
+    "Fusion Result Cache": "Cache des r?sultats Fusion",
+    "Cache exact non-streaming text Fusion results. Streaming, tool, and multimodal requests are never cached.": "Met en cache les r?sultats Fusion texte non streaming exacts. Les requ?tes streaming, outil et multimodales ne sont jamais mises en cache.",
+    "For quality and cost, prefer 2-3 similarly strong models.": "Pour la qualit? et le co?t, pr?f?rez 2 ? 3 mod?les de force comparable.",
+    "Candidate Brief Max Tokens": "Tokens max du r?sum? candidat",
+    "Result Cache TTL (s)": "TTL du cache r?sultat (s)",
+    "Result Cache Max Bytes": "Taille max du cache r?sultat"
   }
 }

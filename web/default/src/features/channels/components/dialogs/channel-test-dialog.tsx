@@ -112,6 +112,8 @@ type TestResult = {
   completedAt?: number
   error?: string
   errorCode?: string
+  detectedConfig?: Record<string, unknown>
+  detectedTemplateId?: number
 }
 
 type BatchProgress = {
@@ -215,6 +217,8 @@ type FailureDetailsState = {
   model: string
   summary: string
   details: string
+  detectedConfig?: Record<string, unknown>
+  detectedTemplateId?: number
 }
 
 function sleep(ms: number) {
@@ -238,6 +242,42 @@ function truncateFailureSummary(summary: string) {
   }
 
   return `${summary.slice(0, FAILURE_SUMMARY_MAX_LENGTH).trimEnd()}...`
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function parseConfigObject(value: string | undefined): Record<string, unknown> {
+  if (!value?.trim()) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return isRecordValue(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function mergeProtocolOverrideConfig(
+  currentConfig: string | undefined,
+  detectedConfig: Record<string, unknown>
+): string {
+  const current = parseConfigObject(currentConfig)
+  const merged: Record<string, unknown> = {
+    ...current,
+    ...detectedConfig,
+  }
+  for (const key of ['headers', 'query', 'body_overrides'] as const) {
+    const currentNested = current[key]
+    const detectedNested = detectedConfig[key]
+    if (isRecordValue(currentNested) || isRecordValue(detectedNested)) {
+      merged[key] = {
+        ...(isRecordValue(currentNested) ? currentNested : {}),
+        ...(isRecordValue(detectedNested) ? detectedNested : {}),
+      }
+    }
+  }
+  return JSON.stringify(merged, null, 2)
 }
 
 function getFailureStatusDisplay({
@@ -337,6 +377,8 @@ function ChannelTestDialogContent({
   const [isDeletingFailed, setIsDeletingFailed] = useState(false)
   const [failureDetails, setFailureDetails] =
     useState<FailureDetailsState | null>(null)
+  const [isApplyingDetectedConfig, setIsApplyingDetectedConfig] =
+    useState(false)
   const [pagination, setPagination] = useState({
     pageIndex: 0,
     pageSize: 30,
@@ -365,6 +407,7 @@ function ChannelTestDialogContent({
     setIsDeleteFailedDialogOpen(false)
     setIsDeletingFailed(false)
     setFailureDetails(null)
+    setIsApplyingDetectedConfig(false)
     setPagination({ pageIndex: 0, pageSize: 30 })
   }, [])
 
@@ -517,7 +560,14 @@ function ChannelTestDialogContent({
             stream: effectiveStreamTest || undefined,
             silent,
           },
-          (success, responseTime, error, errorCode) => {
+          (
+            success,
+            responseTime,
+            error,
+            errorCode,
+            detectedConfig,
+            detectedTemplateId
+          ) => {
             const completedAt = Date.now()
             finalResult = {
               status: success ? 'success' : 'error',
@@ -525,6 +575,8 @@ function ChannelTestDialogContent({
               completedAt,
               error,
               errorCode,
+              detectedConfig,
+              detectedTemplateId,
             }
             updateTestResult(model, finalResult)
           }
@@ -761,6 +813,57 @@ function ChannelTestDialogContent({
       setIsDeletingFailed(false)
     }
   }, [currentRow.id, models, refreshChannelLists, t, testResults])
+
+  const handleApplyDetectedConfig = useCallback(
+    async (details: FailureDetailsState) => {
+      if (!details.detectedConfig || !details.detectedTemplateId) return
+
+      const bindings = currentRow.protocol_bindings ?? []
+      const matchedBinding = bindings.find(
+        (binding) => binding.template_id === details.detectedTemplateId
+      )
+      if (!matchedBinding) {
+        toast.error(t('Matching protocol binding was not found.'))
+        return
+      }
+
+      const nextBindings = bindings.map((binding) => {
+        if (binding.template_id !== details.detectedTemplateId) {
+          return binding
+        }
+        return {
+          ...binding,
+          upstream_config: mergeProtocolOverrideConfig(
+            binding.upstream_config,
+            details.detectedConfig ?? {}
+          ),
+        }
+      })
+
+      setIsApplyingDetectedConfig(true)
+      try {
+        const response = await updateChannel(currentRow.id, {
+          protocol_bindings: nextBindings,
+        })
+        if (response.success) {
+          toast.success(t('Protocol overrides applied.'))
+          setFailureDetails(null)
+          refreshChannelLists()
+        } else {
+          toast.error(response.message || t('Failed to apply protocol overrides'))
+        }
+      } catch (error: unknown) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : t('Failed to apply protocol overrides')
+        )
+      } finally {
+        setIsApplyingDetectedConfig(false)
+      }
+    },
+    [currentRow.id, currentRow.protocol_bindings, refreshChannelLists, t]
+  )
 
   const handleClose = useCallback(() => {
     resetState()
@@ -1113,6 +1216,8 @@ function ChannelTestDialogContent({
       />
       <FailureDetailsSheet
         details={failureDetails}
+        isApplyingDetectedConfig={isApplyingDetectedConfig}
+        onApplyDetectedConfig={handleApplyDetectedConfig}
         onOpenChange={(sheetOpen) => {
           if (!sheetOpen) {
             setFailureDetails(null)
@@ -1231,6 +1336,15 @@ function FailureStatusContent({
     isModelPriceError,
     modelPriceSummary,
   })
+  const detectedConfigText =
+    result.detectedConfig && Object.keys(result.detectedConfig).length > 0
+      ? `${t('Suggested protocol overrides')}:\n${JSON.stringify(
+          result.detectedConfig,
+          null,
+          2
+        )}`
+      : ''
+  const fullDetails = [details, detectedConfigText].filter(Boolean).join('\n\n')
 
   return (
     <div className='flex min-w-0 flex-col gap-1.5 text-xs whitespace-normal'>
@@ -1252,13 +1366,21 @@ function FailureStatusContent({
             {t('Go to Settings')}
           </Button>
         )}
-        {details && (
+        {fullDetails && (
           <Button
             variant='ghost'
             size='sm'
             className='h-7 w-fit px-2 text-xs'
             aria-haspopup='dialog'
-            onClick={() => onOpenDetails({ model, summary, details })}
+            onClick={() =>
+              onOpenDetails({
+                model,
+                summary,
+                details: fullDetails,
+                detectedConfig: result.detectedConfig,
+                detectedTemplateId: result.detectedTemplateId,
+              })
+            }
           >
             <Info className='mr-1 h-3 w-3 shrink-0' />
             {t('Details')}
@@ -1271,9 +1393,13 @@ function FailureStatusContent({
 
 function FailureDetailsSheet({
   details,
+  isApplyingDetectedConfig,
+  onApplyDetectedConfig,
   onOpenChange,
 }: {
   details: FailureDetailsState | null
+  isApplyingDetectedConfig: boolean
+  onApplyDetectedConfig: (details: FailureDetailsState) => void
   onOpenChange: (open: boolean) => void
 }) {
   const { t } = useTranslation()
@@ -1323,6 +1449,20 @@ function FailureDetailsSheet({
               </section>
             </div>
             <SheetFooter className={sideDrawerFooterClassName('sm:px-5')}>
+              {details.detectedConfig && details.detectedTemplateId && (
+                <Button
+                  className='w-full sm:w-auto'
+                  onClick={() => onApplyDetectedConfig(details)}
+                  disabled={isApplyingDetectedConfig}
+                >
+                  {isApplyingDetectedConfig ? (
+                    <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+                  ) : (
+                    <CheckCircle2 className='mr-2 h-4 w-4' />
+                  )}
+                  {t('Apply suggested overrides')}
+                </Button>
+              )}
               <Button
                 variant='outline'
                 className='w-full sm:w-auto'

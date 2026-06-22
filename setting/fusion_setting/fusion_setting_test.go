@@ -27,9 +27,12 @@ func TestFusionSettingDefaults(t *testing.T) {
 	assert.Equal(t, 0, GetFusionFailedCandidateQuota())
 	assert.Equal(t, 1, GetFusionKeyTestQuota())
 	assert.Equal(t, 128000, GetFusionMaxJudgeInputTokens())
-	assert.Equal(t, 20000, GetFusionMaxCandidateOutputChars())
+	assert.Equal(t, 6000, GetFusionMaxCandidateOutputChars())
 	assert.True(t, ShouldFusionUseStreamCandidateBrief())
 	assert.Equal(t, 1024, GetFusionStreamCandidateMaxTokens())
+	assert.False(t, IsFusionResultCacheEnabled())
+	assert.Equal(t, 300, GetFusionResultCacheTTLSeconds())
+	assert.Equal(t, 262144, GetFusionResultCacheMaxPayloadBytes())
 	assert.Equal(t, 86400, GetFusionResponseStateTTLSeconds())
 	assert.Equal(t, 2097152, GetFusionResponseStateMaxPayloadBytes())
 	assert.False(t, IsFusionPrivateBaseURLAllowed())
@@ -50,6 +53,9 @@ func TestFusionSettingLoadFromDB(t *testing.T) {
 		"fusion_setting.charge_failed_candidates":         "true",
 		"fusion_setting.stream_candidate_brief":           "false",
 		"fusion_setting.stream_candidate_max_tokens":      "384",
+		"fusion_setting.result_cache_enabled":             "true",
+		"fusion_setting.result_cache_ttl_seconds":         "120",
+		"fusion_setting.result_cache_max_payload_bytes":   "65536",
 		"fusion_setting.response_state_ttl_seconds":       "3600",
 		"fusion_setting.response_state_max_payload_bytes": "1048576",
 		"fusion_setting.allowed_base_url_domains":         `["example.com","*.example.org"]`,
@@ -64,6 +70,9 @@ func TestFusionSettingLoadFromDB(t *testing.T) {
 	assert.True(t, ShouldFusionChargeFailedCandidates())
 	assert.False(t, ShouldFusionUseStreamCandidateBrief())
 	assert.Equal(t, 384, GetFusionStreamCandidateMaxTokens())
+	assert.True(t, IsFusionResultCacheEnabled())
+	assert.Equal(t, 120, GetFusionResultCacheTTLSeconds())
+	assert.Equal(t, 65536, GetFusionResultCacheMaxPayloadBytes())
 	assert.Equal(t, 3600, GetFusionResponseStateTTLSeconds())
 	assert.Equal(t, 1048576, GetFusionResponseStateMaxPayloadBytes())
 	assert.Equal(t, []string{"example.com", "*.example.org"}, GetFusionAllowedBaseURLDomains())

@@ -147,9 +147,9 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 }
 
 // filterAbilitiesByRequestPath restricts candidates by request path for the DB
-// (non-memory-cache) selection path. Only Advanced Custom (type 58) channels are
-// path-checked: kept only when one of their routes matches requestPath; all other
-// channel types always pass. When requestPath is empty, filtering is skipped.
+// (non-memory-cache) selection path. Advanced Custom routes and protocol template
+// bindings are path-checked; channels without either configuration retain the
+// historical "all text paths pass" behavior.
 func filterAbilitiesByRequestPath(abilities []Ability, requestPath string) []Ability {
 	if requestPath == "" || len(abilities) == 0 {
 		return abilities
@@ -177,11 +177,20 @@ func filterAbilitiesByRequestPath(abilities []Ability, requestPath string) []Abi
 			advancedConfigs[channel.Id] = channel.GetOtherSettings().AdvancedCustom
 		}
 	}
+	protocolPaths, err := GetChannelProtocolClientPaths(channelIds)
+	if err != nil {
+		return abilities
+	}
 
 	filtered := make([]Ability, 0, len(abilities))
 	for _, ability := range abilities {
+		hasProtocolBinding := len(protocolPaths[ability.ChannelId]) > 0
+		if hasProtocolBinding && ChannelProtocolPathsMatch(protocolPaths[ability.ChannelId], requestPath) {
+			filtered = append(filtered, ability)
+			continue
+		}
 		config, isAdvancedCustom := advancedConfigs[ability.ChannelId]
-		if !isAdvancedCustom {
+		if !isAdvancedCustom && !hasProtocolBinding {
 			filtered = append(filtered, ability)
 			continue
 		}

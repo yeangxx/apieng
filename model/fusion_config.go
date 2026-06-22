@@ -12,6 +12,8 @@ import (
 )
 
 const FusionStrategySynthesize = "synthesize"
+const FusionRoutingModeAlways = "always_fusion"
+const FusionRoutingModeAutoSimple = "auto_simple"
 
 var fusionModelAliasPattern = regexp.MustCompile(`^fusion:[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 
@@ -26,6 +28,9 @@ type FusionConfig struct {
 	CandidateModels string         `json:"candidate_models" gorm:"type:text"`
 	JudgeKeyID      int            `json:"judge_key_id" gorm:"index"`
 	JudgeModel      string         `json:"judge_model" gorm:"type:varchar(128)"`
+	RoutingMode     string         `json:"routing_mode" gorm:"type:varchar(32)"`
+	DirectKeyID     int            `json:"direct_key_id" gorm:"index"`
+	DirectModel     string         `json:"direct_model" gorm:"type:varchar(128)"`
 	Strategy        string         `json:"strategy" gorm:"type:varchar(32)"`
 	TimeoutMS       int            `json:"timeout_ms"`
 	MaxParallel     int            `json:"max_parallel"`
@@ -45,6 +50,11 @@ func (config *FusionConfig) Normalize() {
 	config.Name = strings.TrimSpace(config.Name)
 	config.ModelAlias = strings.TrimSpace(config.ModelAlias)
 	config.JudgeModel = strings.TrimSpace(config.JudgeModel)
+	config.RoutingMode = strings.TrimSpace(config.RoutingMode)
+	if config.RoutingMode == "" {
+		config.RoutingMode = FusionRoutingModeAlways
+	}
+	config.DirectModel = strings.TrimSpace(config.DirectModel)
 	config.Strategy = strings.TrimSpace(config.Strategy)
 	if config.Strategy == "" {
 		config.Strategy = FusionStrategySynthesize
@@ -192,6 +202,9 @@ func ValidateFusionConfigKeyOwnership(userId int, config *FusionConfig) error {
 	if config.Strategy != FusionStrategySynthesize {
 		return fmt.Errorf("unsupported fusion strategy: %s", config.Strategy)
 	}
+	if config.RoutingMode != FusionRoutingModeAlways && config.RoutingMode != FusionRoutingModeAutoSimple {
+		return fmt.Errorf("unsupported fusion routing mode: %s", config.RoutingMode)
+	}
 
 	candidates, err := config.GetCandidates()
 	if err != nil {
@@ -246,6 +259,32 @@ func ValidateFusionConfigKeyOwnership(userId int, config *FusionConfig) error {
 	}
 	if !allowed {
 		return fmt.Errorf("judge model %s is not allowed by key %d", config.JudgeModel, config.JudgeKeyID)
+	}
+
+	directKeyID := config.DirectKeyID
+	directModel := strings.TrimSpace(config.DirectModel)
+	if directKeyID == 0 && directModel == "" {
+		return nil
+	}
+	if directKeyID == 0 {
+		directKeyID = config.JudgeKeyID
+	}
+	directKey, err := GetFusionAPIKeyByUserAndId(userId, directKeyID)
+	if err != nil {
+		return fmt.Errorf("direct key %d is not owned by user %d: %w", directKeyID, userId, err)
+	}
+	if directModel == "" {
+		directModel = directKey.DefaultModel
+	}
+	if directModel == "" {
+		return errors.New("direct model is required")
+	}
+	allowed, err = directKey.IsModelAllowed(directModel)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return fmt.Errorf("direct model %s is not allowed by key %d", directModel, directKeyID)
 	}
 	return nil
 }
@@ -316,6 +355,9 @@ func (config *FusionConfig) Update() error {
 			"candidate_models":  config.CandidateModels,
 			"judge_key_id":      config.JudgeKeyID,
 			"judge_model":       config.JudgeModel,
+			"routing_mode":      config.RoutingMode,
+			"direct_key_id":     config.DirectKeyID,
+			"direct_model":      config.DirectModel,
 			"strategy":          config.Strategy,
 			"timeout_ms":        config.TimeoutMS,
 			"max_parallel":      config.MaxParallel,

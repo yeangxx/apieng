@@ -56,7 +56,8 @@ type Channel struct {
 	OtherSettings string `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
 
 	// cache info
-	Keys []string `json:"-" gorm:"-"`
+	Keys             []string                 `json:"-" gorm:"-"`
+	ProtocolBindings []ChannelProtocolBinding `json:"protocol_bindings,omitempty" gorm:"-"`
 }
 
 type ChannelInfo struct {
@@ -447,6 +448,12 @@ func BatchInsertChannels(channels []Channel) error {
 				tx.Rollback()
 				return err
 			}
+			if channel_.ProtocolBindings != nil {
+				if err := replaceChannelProtocolBindingsTx(tx, channel_.Id, channel_.ProtocolBindings); err != nil {
+					tx.Rollback()
+					return err
+				}
+			}
 		}
 	}
 	return tx.Commit().Error
@@ -467,6 +474,10 @@ func BatchDeleteChannels(ids []int) error {
 			return err
 		}
 		if err := tx.Where("channel_id in (?)", chunk).Delete(&Ability{}).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := DeleteChannelProtocolBindingsByChannelIDs(tx, chunk); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -520,7 +531,13 @@ func (channel *Channel) Insert() error {
 		return err
 	}
 	err = channel.AddAbilities(nil)
-	return err
+	if err != nil {
+		return err
+	}
+	if channel.ProtocolBindings != nil {
+		return ReplaceChannelProtocolBindings(channel.Id, channel.ProtocolBindings)
+	}
+	return nil
 }
 
 func (channel *Channel) Update() error {
@@ -569,7 +586,13 @@ func (channel *Channel) Update() error {
 	}
 	DB.Model(channel).First(channel, "id = ?", channel.Id)
 	err = channel.UpdateAbilities(nil)
-	return err
+	if err != nil {
+		return err
+	}
+	if channel.ProtocolBindings != nil {
+		return ReplaceChannelProtocolBindings(channel.Id, channel.ProtocolBindings)
+	}
+	return nil
 }
 
 func (channel *Channel) UpdateResponseTime(responseTime int64) {
@@ -599,7 +622,10 @@ func (channel *Channel) Delete() error {
 		return err
 	}
 	err = channel.DeleteAbilities()
-	return err
+	if err != nil {
+		return err
+	}
+	return DeleteChannelProtocolBindingsByChannelIDs(nil, []int{channel.Id})
 }
 
 var channelStatusLock sync.Mutex
@@ -868,13 +894,35 @@ func updateChannelUsedQuota(id int, quota int) {
 }
 
 func DeleteChannelByStatus(status int64) (int64, error) {
+	var ids []int
+	if err := DB.Model(&Channel{}).Where("status = ?", status).Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
 	result := DB.Where("status = ?", status).Delete(&Channel{})
-	return result.RowsAffected, result.Error
+	if result.Error != nil {
+		return result.RowsAffected, result.Error
+	}
+	if err := DeleteChannelProtocolBindingsByChannelIDs(nil, ids); err != nil {
+		return result.RowsAffected, err
+	}
+	return result.RowsAffected, nil
 }
 
 func DeleteDisabledChannel() (int64, error) {
+	var ids []int
+	if err := DB.Model(&Channel{}).
+		Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).
+		Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
 	result := DB.Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Delete(&Channel{})
-	return result.RowsAffected, result.Error
+	if result.Error != nil {
+		return result.RowsAffected, result.Error
+	}
+	if err := DeleteChannelProtocolBindingsByChannelIDs(nil, ids); err != nil {
+		return result.RowsAffected, err
+	}
+	return result.RowsAffected, nil
 }
 
 func GetPaginatedTags(offset int, limit int) ([]*string, error) {

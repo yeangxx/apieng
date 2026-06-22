@@ -116,12 +116,30 @@ func decodeFusionControllerResponse(t *testing.T, recorder *httptest.ResponseRec
 	return payload
 }
 
+func createFusionControllerChatTemplate(t *testing.T) *model.FusionUpstreamTemplate {
+	t.Helper()
+	template := &model.FusionUpstreamTemplate{
+		Name:          "Test OpenAI Chat Completions",
+		ProviderLabel: "OpenAI Compatible",
+		Protocol:      model.FusionProtocolOpenAIChatCompatible,
+		EndpointPath:  "/v1/chat/completions",
+		AuthType:      model.FusionAuthTypeBearer,
+		AuthHeader:    "Authorization",
+		DetectRules:   `[]`,
+		Enabled:       true,
+	}
+	require.NoError(t, template.Insert())
+	return template
+}
+
 func createFusionControllerKey(t *testing.T, userId int, name string) *model.FusionAPIKey {
 	t.Helper()
+	template := createFusionControllerChatTemplate(t)
 	key := &model.FusionAPIKey{
 		UserId:       userId,
 		Name:         name,
 		Provider:     model.FusionProviderOpenAICompatible,
+		TemplateID:   template.Id,
 		BaseURL:      "https://127.0.0.1/v1",
 		DefaultModel: "gpt-4o-mini",
 		Status:       model.FusionKeyStatusEnabled,
@@ -325,10 +343,12 @@ func newDelayedFusionRelayTLSServer(t *testing.T, delay time.Duration, responses
 
 func createFusionRelayKey(t *testing.T, userId int, baseURL string) *model.FusionAPIKey {
 	t.Helper()
+	template := createFusionControllerChatTemplate(t)
 	key := &model.FusionAPIKey{
 		UserId:       userId,
 		Name:         "relay-key",
 		Provider:     model.FusionProviderOpenAICompatible,
+		TemplateID:   template.Id,
 		BaseURL:      baseURL,
 		DefaultModel: "candidate-a",
 		Status:       model.FusionKeyStatusEnabled,
@@ -668,6 +688,34 @@ func TestCreateFusionConfigRejectsModelOutsideKeyAllowlist(t *testing.T) {
 	assert.Contains(t, payload["message"], "candidate model")
 }
 
+func TestCreateFusionConfigRejectsForeignDirectKey(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	key := createFusionControllerKey(t, 1, "owned")
+	foreignKey := createFusionControllerKey(t, 2, "foreign")
+
+	recorder := fusionControllerJSONRequest(t, CreateFusionConfig, http.MethodPost, "/api/fusion/configs", 1, dto.FusionConfigCreateRequest{
+		Name:            "Research",
+		ModelAlias:      "fusion:research",
+		Enabled:         true,
+		CandidateKeyIDs: []int{key.Id},
+		CandidateModels: map[string]string{fmt.Sprintf("%d", key.Id): "gpt-4o-mini"},
+		JudgeKeyID:      key.Id,
+		JudgeModel:      "gpt-4o-mini",
+		RoutingMode:     model.FusionRoutingModeAutoSimple,
+		DirectKeyID:     foreignKey.Id,
+		DirectModel:     "gpt-4o-mini",
+		Strategy:        model.FusionStrategySynthesize,
+		TimeoutMS:       45000,
+		MaxParallel:     1,
+		MinSuccesses:    1,
+	})
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	payload := decodeFusionControllerResponse(t, recorder)
+	assert.Equal(t, false, payload["success"])
+	assert.Contains(t, payload["message"], "direct key")
+}
+
 func TestCreateFusionConfigReturnsSavedShape(t *testing.T) {
 	setupFusionControllerTestDB(t)
 	key := createFusionControllerKey(t, 1, "owned")
@@ -680,6 +728,9 @@ func TestCreateFusionConfigReturnsSavedShape(t *testing.T) {
 		CandidateModels: map[string]string{fmt.Sprintf("%d", key.Id): "gpt-4o-mini"},
 		JudgeKeyID:      key.Id,
 		JudgeModel:      "gpt-4o-mini",
+		RoutingMode:     model.FusionRoutingModeAutoSimple,
+		DirectKeyID:     key.Id,
+		DirectModel:     "gpt-4o-mini",
 		Strategy:        model.FusionStrategySynthesize,
 		TimeoutMS:       45000,
 		MaxParallel:     1,
@@ -692,6 +743,31 @@ func TestCreateFusionConfigReturnsSavedShape(t *testing.T) {
 	body := recorder.Body.String()
 	assert.Contains(t, body, "fusion:research")
 	assert.Contains(t, body, "candidate_key_ids")
+	assert.Contains(t, body, "routing_mode")
+	assert.Contains(t, body, model.FusionRoutingModeAutoSimple)
+	assert.Contains(t, body, "direct_key_id")
+	assert.Contains(t, body, "direct_model")
+}
+
+func TestFusionLogOtherIncludesExecutionModeAndCanceledCandidates(t *testing.T) {
+	result := &service.FusionEngineResult{
+		ExecutionMode: service.FusionExecutionModeCache,
+		RouteReason:   "result_cache_hit",
+		CacheHit:      true,
+		Candidates: []service.FusionCandidateResult{
+			{KeyID: 1, Model: "candidate-a", Success: true, Usage: dto.Usage{PromptTokens: 10, CompletionTokens: 2}},
+			{KeyID: 2, Model: "candidate-b", Canceled: true},
+		},
+	}
+
+	other := buildFusionLogOther(nil, result, 100, 1, service.FusionBillingPolicy{MinimumQuota: 1, GroupRatio: 1})
+
+	assert.Equal(t, service.FusionExecutionModeCache, other["execution_mode"])
+	assert.Equal(t, "result_cache_hit", other["route_reason"])
+	assert.Equal(t, true, other["cache_hit"])
+	assert.Equal(t, 2, other["candidate_count"])
+	assert.Equal(t, 1, other["candidate_success_count"])
+	assert.Equal(t, 1, other["candidate_canceled_count"])
 }
 
 func TestDeleteFusionAPIKeyRejectsConfigReferences(t *testing.T) {

@@ -33,6 +33,9 @@ type FusionSetting struct {
 	MaxCandidateOutputChars      int      `json:"max_candidate_output_chars"`
 	StreamCandidateBrief         bool     `json:"stream_candidate_brief"`
 	StreamCandidateMaxTokens     int      `json:"stream_candidate_max_tokens"`
+	ResultCacheEnabled           bool     `json:"result_cache_enabled"`
+	ResultCacheTTLSeconds        int      `json:"result_cache_ttl_seconds"`
+	ResultCacheMaxPayloadBytes   int      `json:"result_cache_max_payload_bytes"`
 	ResponseStateTTLSeconds      int      `json:"response_state_ttl_seconds"`
 	ResponseStateMaxPayloadBytes int      `json:"response_state_max_payload_bytes"`
 	AllowPrivateBaseURL          bool     `json:"allow_private_base_url"`
@@ -64,9 +67,12 @@ func defaultFusionSetting() FusionSetting {
 		FailedCandidateQuota:         0,
 		KeyTestQuota:                 1,
 		MaxJudgeInputTokens:          128000,
-		MaxCandidateOutputChars:      20000,
+		MaxCandidateOutputChars:      6000,
 		StreamCandidateBrief:         true,
 		StreamCandidateMaxTokens:     1024,
+		ResultCacheEnabled:           false,
+		ResultCacheTTLSeconds:        300,
+		ResultCacheMaxPayloadBytes:   262144,
 		ResponseStateTTLSeconds:      86400,
 		ResponseStateMaxPayloadBytes: 2097152,
 		AllowPrivateBaseURL:          false,
@@ -156,6 +162,18 @@ func ShouldFusionUseStreamCandidateBrief() bool {
 
 func GetFusionStreamCandidateMaxTokens() int {
 	return fusionSetting.StreamCandidateMaxTokens
+}
+
+func IsFusionResultCacheEnabled() bool {
+	return fusionSetting.ResultCacheEnabled
+}
+
+func GetFusionResultCacheTTLSeconds() int {
+	return fusionSetting.ResultCacheTTLSeconds
+}
+
+func GetFusionResultCacheMaxPayloadBytes() int {
+	return fusionSetting.ResultCacheMaxPayloadBytes
 }
 
 func GetFusionResponseStateTTLSeconds() int {

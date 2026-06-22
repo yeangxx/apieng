@@ -50,9 +50,22 @@ export const FUSION_KEY_STATUS_OPTIONS = Object.values(FUSION_KEY_STATUSES).map(
 )
 
 export const FUSION_PROVIDER_OPENAI_COMPATIBLE = 'openai_compatible'
+export const FUSION_PROTOCOL_OPENAI_RESPONSES = 'openai_responses'
 export const FUSION_PROTOCOL_OPENAI_CHAT_COMPATIBLE =
   'openai_chat_compatible'
+export const FUSION_PROTOCOL_ANTHROPIC_MESSAGES = 'anthropic_messages'
 export const FUSION_STRATEGY_SYNTHESIZE = 'synthesize'
+export const FUSION_ROUTING_MODE_ALWAYS = 'always_fusion'
+export const FUSION_ROUTING_MODE_AUTO_SIMPLE = 'auto_simple'
+
+export const FUSION_PROTOCOL_OPTIONS = [
+  { label: 'OpenAI Responses', value: FUSION_PROTOCOL_OPENAI_RESPONSES },
+  {
+    label: 'OpenAI Chat Completions Compatible',
+    value: FUSION_PROTOCOL_OPENAI_CHAT_COMPATIBLE,
+  },
+  { label: 'Anthropic Messages', value: FUSION_PROTOCOL_ANTHROPIC_MESSAGES },
+] as const
 
 export const FUSION_AUTH_TYPE_OPTIONS = [
   { label: 'Bearer header', value: 'bearer' },

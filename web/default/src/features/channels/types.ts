@@ -34,6 +34,20 @@ export const channelInfoSchema = z.object({
 
 export type ChannelInfo = z.infer<typeof channelInfoSchema>
 
+export const channelProtocolBindingSchema = z.object({
+  id: z.number().default(0),
+  channel_id: z.number().default(0),
+  template_id: z.number(),
+  enabled: z.boolean().default(true),
+  upstream_config: z.string().default('{}'),
+  created_at: z.number().default(0),
+  updated_at: z.number().default(0),
+})
+
+export type ChannelProtocolBinding = z.infer<
+  typeof channelProtocolBindingSchema
+>
+
 export const channelSchema = z.object({
   id: z.number(),
   type: z.number(),
@@ -71,6 +85,7 @@ export const channelSchema = z.object({
     multi_key_mode: 'random',
   }),
   settings: z.string().default('{}'), // other_settings JSON
+  protocol_bindings: z.array(channelProtocolBindingSchema).default([]),
 })
 
 export type Channel = z.infer<typeof channelSchema>
@@ -179,6 +194,8 @@ export interface ChannelTestResponse {
   success: boolean
   message?: string
   error_code?: string
+  detected_config?: Record<string, unknown>
+  detected_template_id?: number
   time?: number
   data?: {
     response_time?: number
@@ -354,6 +371,7 @@ export interface ChannelFormData {
   param_override?: string
   header_override?: string
   settings?: string
+  protocol_bindings?: ChannelProtocolBinding[]
   other?: string
   // Multi-key specific
   multi_key_mode?: 'single' | 'batch' | 'multi_to_single'

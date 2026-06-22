@@ -1364,16 +1364,28 @@ func buildFusionLogOther(relayInfo *relaycommon.RelayInfo, result *service.Fusio
 	if result == nil {
 		return other
 	}
+	executionMode := result.ExecutionMode
+	if executionMode == "" {
+		executionMode = service.FusionExecutionModeFusion
+	}
+	other["execution_mode"] = executionMode
+	other["route_reason"] = result.RouteReason
+	other["cache_hit"] = result.CacheHit
 	candidates := make([]map[string]interface{}, 0, len(result.Candidates))
 	successCount := 0
+	canceledCount := 0
 	for _, candidate := range result.Candidates {
 		if candidate.Success {
 			successCount++
+		}
+		if candidate.Canceled {
+			canceledCount++
 		}
 		candidates = append(candidates, map[string]interface{}{
 			"key_id":            candidate.KeyID,
 			"model":             candidate.Model,
 			"success":           candidate.Success,
+			"canceled":          candidate.Canceled,
 			"prompt_tokens":     candidate.Usage.PromptTokens,
 			"completion_tokens": candidate.Usage.CompletionTokens,
 			"latency_ms":        candidate.LatencyMS,
@@ -1384,6 +1396,7 @@ func buildFusionLogOther(relayInfo *relaycommon.RelayInfo, result *service.Fusio
 	other["candidates"] = candidates
 	other["candidate_count"] = len(result.Candidates)
 	other["candidate_success_count"] = successCount
+	other["candidate_canceled_count"] = canceledCount
 	other["judge"] = map[string]interface{}{
 		"key_id":            result.Judge.KeyID,
 		"model":             result.Judge.Model,
@@ -2079,6 +2092,7 @@ func buildFusionUpstreamTemplateFromRequest(req dto.FusionUpstreamTemplateReques
 		Name:                 req.Name,
 		ProviderLabel:        req.ProviderLabel,
 		Protocol:             req.Protocol,
+		ClientPath:           req.ClientPath,
 		EndpointPath:         req.EndpointPath,
 		AuthType:             req.AuthType,
 		AuthHeader:           req.AuthHeader,
@@ -2086,6 +2100,9 @@ func buildFusionUpstreamTemplateFromRequest(req dto.FusionUpstreamTemplateReques
 		DefaultHeaders:       req.DefaultHeaders,
 		DefaultQuery:         req.DefaultQuery,
 		DefaultBodyOverrides: req.DefaultBodyOverrides,
+		RequestConverter:     req.RequestConverter,
+		ResponseConverter:    req.ResponseConverter,
+		StreamConverter:      req.StreamConverter,
 		DetectRules:          req.DetectRules,
 		Enabled:              req.Enabled,
 		Sort:                 req.Sort,
@@ -2098,6 +2115,7 @@ func buildFusionUpstreamTemplateResponse(template *model.FusionUpstreamTemplate)
 		Name:                 template.Name,
 		ProviderLabel:        template.ProviderLabel,
 		Protocol:             template.Protocol,
+		ClientPath:           template.ClientPath,
 		EndpointPath:         template.EndpointPath,
 		AuthType:             template.AuthType,
 		AuthHeader:           template.AuthHeader,
@@ -2105,6 +2123,9 @@ func buildFusionUpstreamTemplateResponse(template *model.FusionUpstreamTemplate)
 		DefaultHeaders:       template.DefaultHeaders,
 		DefaultQuery:         template.DefaultQuery,
 		DefaultBodyOverrides: template.DefaultBodyOverrides,
+		RequestConverter:     template.RequestConverter,
+		ResponseConverter:    template.ResponseConverter,
+		StreamConverter:      template.StreamConverter,
 		DetectRules:          template.DetectRules,
 		Enabled:              template.Enabled,
 		Sort:                 template.Sort,
@@ -2758,6 +2779,9 @@ func prepareFusionConfig(userId int, req dto.FusionConfigCreateRequest) (*model.
 		Enabled:      req.Enabled,
 		JudgeKeyID:   req.JudgeKeyID,
 		JudgeModel:   req.JudgeModel,
+		RoutingMode:  req.RoutingMode,
+		DirectKeyID:  req.DirectKeyID,
+		DirectModel:  req.DirectModel,
 		Strategy:     req.Strategy,
 		TimeoutMS:    timeoutMS,
 		MaxParallel:  maxParallel,
@@ -2777,6 +2801,7 @@ func prepareFusionConfig(userId int, req dto.FusionConfigCreateRequest) (*model.
 }
 
 func buildFusionConfigResponse(config *model.FusionConfig) (dto.FusionConfigResponse, error) {
+	config.Normalize()
 	candidates, err := config.GetCandidates()
 	if err != nil {
 		return dto.FusionConfigResponse{}, err
@@ -2799,6 +2824,9 @@ func buildFusionConfigResponse(config *model.FusionConfig) (dto.FusionConfigResp
 		CandidateModels: candidateModels,
 		JudgeKeyID:      config.JudgeKeyID,
 		JudgeModel:      config.JudgeModel,
+		RoutingMode:     config.RoutingMode,
+		DirectKeyID:     config.DirectKeyID,
+		DirectModel:     config.DirectModel,
 		Strategy:        config.Strategy,
 		TimeoutMS:       config.TimeoutMS,
 		MaxParallel:     config.MaxParallel,

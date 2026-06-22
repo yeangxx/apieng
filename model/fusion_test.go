@@ -202,6 +202,38 @@ func TestFusionConfigAliasValidation(t *testing.T) {
 	assert.Error(t, ValidateFusionModelAlias("fusion:-bad"))
 }
 
+func TestDefaultFusionUpstreamTemplatesUseResponsesByDefault(t *testing.T) {
+	setupFusionModelTestDB(t)
+
+	defaultTemplate := DefaultFusionUpstreamTemplate()
+	assert.Equal(t, FusionProtocolOpenAIResponses, defaultTemplate.Protocol)
+	assert.Equal(t, "/v1/responses", defaultTemplate.EndpointPath)
+
+	insertedDefault, err := EnsureDefaultFusionUpstreamTemplate()
+	require.NoError(t, err)
+	assert.Equal(t, FusionProtocolOpenAIResponses, insertedDefault.Protocol)
+	assert.Equal(t, "/v1/responses", insertedDefault.EndpointPath)
+
+	templates, err := ListFusionUpstreamTemplates(false)
+	require.NoError(t, err)
+	require.NotEmpty(t, templates)
+	protocols := make(map[string]bool, len(templates))
+	var responsesTemplate *FusionUpstreamTemplate
+	for _, template := range templates {
+		protocols[template.Protocol] = true
+		if template.Name == "OpenAI Responses" {
+			responsesTemplate = template
+		}
+	}
+	assert.True(t, protocols[FusionProtocolOpenAIResponses])
+	assert.True(t, protocols[FusionProtocolOpenAIChatCompatible])
+	assert.True(t, protocols[FusionProtocolAnthropicMessages])
+	require.NotNil(t, responsesTemplate)
+	assert.Equal(t, UpstreamProtocolConverterNone, responsesTemplate.RequestConverter)
+	assert.Equal(t, "/v1/responses", responsesTemplate.ClientPath)
+	assert.Equal(t, "/v1/responses", responsesTemplate.EndpointPath)
+}
+
 func TestFusionConfigModelOverrideRespectsKeyAllowlist(t *testing.T) {
 	setupFusionModelTestDB(t)
 	key := createFusionTestKey(t, 1, "allowlist", []string{"gpt-4o-mini"})
@@ -219,5 +251,33 @@ func TestFusionConfigModelOverrideRespectsKeyAllowlist(t *testing.T) {
 	assert.Contains(t, err.Error(), "judge model")
 
 	config = createFusionTestConfig(t, 1, []int{key.Id}, key.Id, nil, "gpt-4o-mini")
+	require.NoError(t, ValidateFusionConfigKeyOwnership(1, config))
+}
+
+func TestFusionConfigDirectRouteValidation(t *testing.T) {
+	setupFusionModelTestDB(t)
+	key := createFusionTestKey(t, 1, "allowlist", []string{"gpt-4o-mini"})
+	foreignKey := createFusionTestKey(t, 2, "foreign", []string{"gpt-4o-mini"})
+
+	config := createFusionTestConfig(t, 1, []int{key.Id}, key.Id, nil, "gpt-4o-mini")
+	config.RoutingMode = FusionRoutingModeAutoSimple
+	config.DirectKeyID = foreignKey.Id
+	config.DirectModel = "gpt-4o-mini"
+	err := ValidateFusionConfigKeyOwnership(1, config)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "direct key")
+
+	config = createFusionTestConfig(t, 1, []int{key.Id}, key.Id, nil, "gpt-4o-mini")
+	config.RoutingMode = FusionRoutingModeAutoSimple
+	config.DirectKeyID = key.Id
+	config.DirectModel = "gpt-4o"
+	err = ValidateFusionConfigKeyOwnership(1, config)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "direct model")
+
+	config = createFusionTestConfig(t, 1, []int{key.Id}, key.Id, nil, "gpt-4o-mini")
+	config.RoutingMode = FusionRoutingModeAutoSimple
+	config.DirectKeyID = key.Id
+	config.DirectModel = "gpt-4o-mini"
 	require.NoError(t, ValidateFusionConfigKeyOwnership(1, config))
 }
