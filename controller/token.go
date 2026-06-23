@@ -200,22 +200,28 @@ func validateTokenFusionBinding(userId int, group string, modelLimitsEnabled boo
 		return nil
 	}
 
-	if !modelLimitsEnabled || len(limits) != 1 {
-		return fmt.Errorf("Fusion token group requires exactly one enabled Fusion model limit")
+	if !modelLimitsEnabled || len(limits) == 0 {
+		return fmt.Errorf("Fusion token group requires at least one enabled Fusion model limit")
 	}
-	alias := limits[0]
-	if !isFusionModelAlias(alias) {
-		return fmt.Errorf("Fusion token group can only bind one Fusion model")
-	}
-	if err := model.ValidateFusionModelAlias(alias); err != nil {
-		return err
-	}
-	config, err := model.GetFusionConfigByUserAndAlias(userId, alias)
-	if err != nil {
-		return fmt.Errorf("Fusion config %s is not available for this user: %w", alias, err)
-	}
-	if !config.Enabled {
-		return fmt.Errorf("Fusion config %s is disabled", alias)
+	seen := make(map[string]struct{}, len(limits))
+	for _, alias := range limits {
+		if !isFusionModelAlias(alias) {
+			return fmt.Errorf("Fusion token group can only bind Fusion models")
+		}
+		if _, ok := seen[alias]; ok {
+			return fmt.Errorf("Fusion model limit is duplicated: %s", alias)
+		}
+		seen[alias] = struct{}{}
+		if err := model.ValidateFusionModelAlias(alias); err != nil {
+			return err
+		}
+		config, err := model.GetFusionConfigByUserAndAlias(userId, alias)
+		if err != nil {
+			return fmt.Errorf("Fusion config %s is not available for this user: %w", alias, err)
+		}
+		if !config.Enabled {
+			return fmt.Errorf("Fusion config %s is disabled", alias)
+		}
 	}
 	return nil
 }

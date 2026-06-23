@@ -16,19 +16,37 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Save, Trash2 } from 'lucide-react'
+import { Pencil, Plus, Save, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import {
   NativeSelect,
   NativeSelectOption,
 } from '@/components/ui/native-select'
 import { Switch } from '@/components/ui/switch'
+import {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 
 import {
@@ -156,6 +174,7 @@ export function FusionUpstreamTemplateManager() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [selectedId, setSelectedId] = useState<number | undefined>()
+  const [editorOpen, setEditorOpen] = useState(false)
   const [formState, setFormState] = useState<TemplateFormState>(
     emptyTemplateState()
   )
@@ -195,14 +214,6 @@ export function FusionUpstreamTemplateManager() {
     [convertersQuery.data]
   )
 
-  useEffect(() => {
-    if (selectedId !== undefined) return
-    const firstTemplate = templates[0]
-    if (!firstTemplate) return
-    setSelectedId(firstTemplate.id)
-    setFormState(stateFromTemplate(firstTemplate))
-  }, [selectedId, templates])
-
   const saveMutation = useMutation({
     mutationFn: async (state: TemplateFormState) => {
       const payload = templatePayload(state)
@@ -224,6 +235,7 @@ export function FusionUpstreamTemplateManager() {
         setSelectedId(result.data.id)
         setFormState(stateFromTemplate(result.data))
       }
+      setEditorOpen(false)
     },
   })
 
@@ -239,6 +251,7 @@ export function FusionUpstreamTemplateManager() {
       toast.success(t(FUSION_SUCCESS_MESSAGES.TEMPLATE_DELETED))
       setSelectedId(undefined)
       setFormState(emptyTemplateState())
+      setEditorOpen(false)
       await queryClient.invalidateQueries({ queryKey: templateQueryKey })
     },
   })
@@ -253,11 +266,13 @@ export function FusionUpstreamTemplateManager() {
   const selectTemplate = (template: UpstreamProtocolTemplate) => {
     setSelectedId(template.id)
     setFormState(stateFromTemplate(template))
+    setEditorOpen(true)
   }
 
   const startNewTemplate = () => {
     setSelectedId(undefined)
     setFormState(emptyTemplateState())
+    setEditorOpen(true)
   }
 
   const formatField = (
@@ -308,9 +323,9 @@ export function FusionUpstreamTemplateManager() {
   }
 
   return (
-    <div className='space-y-4 rounded-lg border p-4'>
+    <div className='space-y-4 rounded-md border bg-white p-4 dark:bg-slate-950/60'>
       <div className='flex flex-wrap items-start justify-between gap-3'>
-        <div>
+        <div className='min-w-0'>
           <h3 className='text-sm font-medium'>
             {t('Upstream Protocol Templates')}
           </h3>
@@ -320,218 +335,318 @@ export function FusionUpstreamTemplateManager() {
             )}
           </p>
         </div>
-        <Button type='button' variant='outline' size='sm' onClick={startNewTemplate}>
+        <Button type='button' size='sm' onClick={startNewTemplate}>
           <Plus data-icon='inline-start' />
           {t('New Template')}
         </Button>
       </div>
 
-      <div className='flex flex-wrap gap-2'>
-        {templatesQuery.isLoading && (
-          <span className='text-muted-foreground text-sm'>{t('Loading...')}</span>
-        )}
-        {templates.map((template) => (
-          <Button
-            key={template.id}
-            type='button'
-            variant={selectedId === template.id ? 'default' : 'outline'}
-            size='sm'
-            onClick={() => selectTemplate(template)}
-          >
-            {template.name}
-            {!template.enabled && (
-              <span className='text-xs opacity-70'>({t('Disabled')})</span>
+      <div className='rounded-md border'>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>{t('Name')}</TableHead>
+              <TableHead>{t('Protocol')}</TableHead>
+              <TableHead>{t('Client Path')}</TableHead>
+              <TableHead>{t('Upstream Path')}</TableHead>
+              <TableHead>{t('Request Converter')}</TableHead>
+              <TableHead>{t('Status')}</TableHead>
+              <TableHead className='text-right'>{t('Actions')}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {templatesQuery.isLoading && (
+              <TableRow>
+                <TableCell
+                  colSpan={7}
+                  className='text-muted-foreground h-20 text-center'
+                >
+                  {t('Loading...')}
+                </TableCell>
+              </TableRow>
             )}
-          </Button>
-        ))}
-      </div>
-
-      <div className='grid gap-4 lg:grid-cols-2'>
-        <label className='space-y-1.5'>
-          <span className='text-sm font-medium'>{t('Name')}</span>
-          <Input
-            value={formState.name}
-            onChange={(event) => setField('name', event.target.value)}
-            placeholder='OpenAI Compatible'
-          />
-        </label>
-        <label className='space-y-1.5'>
-          <span className='text-sm font-medium'>{t('Provider Label')}</span>
-          <Input
-            value={formState.provider_label}
-            onChange={(event) =>
-              setField('provider_label', event.target.value)
-            }
-            placeholder='OpenAI'
-          />
-        </label>
-        <label className='space-y-1.5'>
-          <span className='text-sm font-medium'>{t('Protocol')}</span>
-          <Input
-            value={formState.protocol}
-            onChange={(event) => setField('protocol', event.target.value)}
-            placeholder='openai_chat_compatible'
-          />
-        </label>
-        <label className='space-y-1.5'>
-          <span className='text-sm font-medium'>{t('Client Path')}</span>
-          <Input
-            value={formState.client_path}
-            onChange={(event) => setField('client_path', event.target.value)}
-            placeholder='/v1/chat/completions'
-          />
-        </label>
-        <label className='space-y-1.5'>
-          <span className='text-sm font-medium'>{t('Upstream Path')}</span>
-          <Input
-            value={formState.endpoint_path}
-            onChange={(event) => setField('endpoint_path', event.target.value)}
-            placeholder='/v1/chat/completions'
-          />
-        </label>
-        <label className='space-y-1.5'>
-          <span className='text-sm font-medium'>{t('Auth Type')}</span>
-          <NativeSelect
-            className='w-full'
-            value={formState.auth_type}
-            onChange={(event) => setField('auth_type', event.target.value)}
-          >
-            {FUSION_AUTH_TYPE_OPTIONS.map((option) => (
-              <NativeSelectOption key={option.value} value={option.value}>
-                {t(option.label)}
-              </NativeSelectOption>
+            {!templatesQuery.isLoading && templates.length === 0 && (
+              <TableRow>
+                <TableCell
+                  colSpan={7}
+                  className='text-muted-foreground h-20 text-center'
+                >
+                  {t('No upstream protocol templates yet.')}
+                </TableCell>
+              </TableRow>
+            )}
+            {templates.map((template) => (
+              <TableRow
+                key={template.id}
+                data-state={selectedId === template.id ? 'selected' : undefined}
+                className='cursor-pointer'
+                onClick={() => selectTemplate(template)}
+              >
+                <TableCell className='font-medium'>{template.name}</TableCell>
+                <TableCell>
+                  <span className='font-mono text-xs'>{template.protocol}</span>
+                </TableCell>
+                <TableCell>
+                  <span className='font-mono text-xs'>
+                    {template.client_path}
+                  </span>
+                </TableCell>
+                <TableCell>
+                  <span className='font-mono text-xs'>
+                    {template.endpoint_path}
+                  </span>
+                </TableCell>
+                <TableCell>
+                  <span className='font-mono text-xs'>
+                    {template.request_converter || 'none'}
+                  </span>
+                </TableCell>
+                <TableCell>
+                  <Badge variant={template.enabled ? 'secondary' : 'outline'}>
+                    {template.enabled ? t('Enabled') : t('Disabled')}
+                  </Badge>
+                </TableCell>
+                <TableCell className='text-right'>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      selectTemplate(template)
+                    }}
+                  >
+                    <Pencil data-icon='inline-start' />
+                    {t('Edit')}
+                  </Button>
+                </TableCell>
+              </TableRow>
             ))}
-          </NativeSelect>
-        </label>
-        <div className='grid gap-4 sm:grid-cols-2'>
-          <label className='space-y-1.5'>
-            <span className='text-sm font-medium'>{t('Auth Header')}</span>
-            <Input
-              value={formState.auth_header}
-              onChange={(event) => setField('auth_header', event.target.value)}
-              placeholder='Authorization'
-            />
-          </label>
-          <label className='space-y-1.5'>
-            <span className='text-sm font-medium'>{t('Auth Query Name')}</span>
-            <Input
-              value={formState.auth_query_name}
-              onChange={(event) =>
-                setField('auth_query_name', event.target.value)
-              }
-              placeholder='key'
-            />
-          </label>
-        </div>
+          </TableBody>
+        </Table>
       </div>
 
-      <div className='grid gap-4 lg:grid-cols-3'>
-        {(
-          [
-            ['request_converter', 'Request Converter'],
-            ['response_converter', 'Response Converter'],
-            ['stream_converter', 'Stream Converter'],
-          ] as const
-        ).map(([key, label]) => (
-          <label key={key} className='space-y-1.5'>
-            <span className='text-sm font-medium'>{t(label)}</span>
-            <NativeSelect
-              className='w-full'
-              value={formState[key]}
-              onChange={(event) => setField(key, event.target.value)}
-              disabled={convertersQuery.isLoading}
-            >
-              {(converters.length > 0
-                ? converters
-                : [
-                    {
-                      id: 'none',
-                      label: 'None',
-                      direction: 'any',
-                      source: 'same',
-                      target: 'same',
-                    },
-                  ]
-              ).map((converter) => (
-                <NativeSelectOption key={converter.id} value={converter.id}>
-                  {converterDisplayName(converter)}
-                </NativeSelectOption>
+      <Sheet open={editorOpen} onOpenChange={setEditorOpen}>
+        <SheetContent className='sm:max-w-[760px]'>
+          <SheetHeader className='border-b'>
+            <SheetTitle>
+              {formState.id ? t('Maintain Template') : t('New Template')}
+            </SheetTitle>
+            <SheetDescription>
+              {t(
+                'Maintain upstream paths, authentication, converter registry ids, and default overrides for this protocol template.'
+              )}
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className='min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pb-4'>
+            <div className='grid gap-4 lg:grid-cols-2'>
+              <label className='space-y-1.5'>
+                <span className='text-sm font-medium'>{t('Name')}</span>
+                <Input
+                  value={formState.name}
+                  onChange={(event) => setField('name', event.target.value)}
+                  placeholder='OpenAI Compatible'
+                />
+              </label>
+              <label className='space-y-1.5'>
+                <span className='text-sm font-medium'>
+                  {t('Provider Label')}
+                </span>
+                <Input
+                  value={formState.provider_label}
+                  onChange={(event) =>
+                    setField('provider_label', event.target.value)
+                  }
+                  placeholder='OpenAI'
+                />
+              </label>
+              <label className='space-y-1.5'>
+                <span className='text-sm font-medium'>{t('Protocol')}</span>
+                <Input
+                  value={formState.protocol}
+                  onChange={(event) => setField('protocol', event.target.value)}
+                  placeholder='openai_chat_compatible'
+                />
+              </label>
+              <label className='space-y-1.5'>
+                <span className='text-sm font-medium'>{t('Client Path')}</span>
+                <Input
+                  value={formState.client_path}
+                  onChange={(event) =>
+                    setField('client_path', event.target.value)
+                  }
+                  placeholder='/v1/chat/completions'
+                />
+              </label>
+              <label className='space-y-1.5'>
+                <span className='text-sm font-medium'>{t('Upstream Path')}</span>
+                <Input
+                  value={formState.endpoint_path}
+                  onChange={(event) =>
+                    setField('endpoint_path', event.target.value)
+                  }
+                  placeholder='/v1/chat/completions'
+                />
+              </label>
+              <label className='space-y-1.5'>
+                <span className='text-sm font-medium'>{t('Auth Type')}</span>
+                <NativeSelect
+                  className='w-full'
+                  value={formState.auth_type}
+                  onChange={(event) => setField('auth_type', event.target.value)}
+                >
+                  {FUSION_AUTH_TYPE_OPTIONS.map((option) => (
+                    <NativeSelectOption key={option.value} value={option.value}>
+                      {t(option.label)}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+              </label>
+              <label className='space-y-1.5'>
+                <span className='text-sm font-medium'>{t('Auth Header')}</span>
+                <Input
+                  value={formState.auth_header}
+                  onChange={(event) =>
+                    setField('auth_header', event.target.value)
+                  }
+                  placeholder='Authorization'
+                />
+              </label>
+              <label className='space-y-1.5'>
+                <span className='text-sm font-medium'>
+                  {t('Auth Query Name')}
+                </span>
+                <Input
+                  value={formState.auth_query_name}
+                  onChange={(event) =>
+                    setField('auth_query_name', event.target.value)
+                  }
+                  placeholder='key'
+                />
+              </label>
+            </div>
+
+            <div className='grid gap-4 lg:grid-cols-3'>
+              {(
+                [
+                  ['request_converter', 'Request Converter'],
+                  ['response_converter', 'Response Converter'],
+                  ['stream_converter', 'Stream Converter'],
+                ] as const
+              ).map(([key, label]) => (
+                <label key={key} className='space-y-1.5'>
+                  <span className='text-sm font-medium'>{t(label)}</span>
+                  <NativeSelect
+                    className='w-full'
+                    value={formState[key]}
+                    onChange={(event) => setField(key, event.target.value)}
+                    disabled={convertersQuery.isLoading}
+                  >
+                    {(converters.length > 0
+                      ? converters
+                      : [
+                          {
+                            id: 'none',
+                            label: 'None',
+                            direction: 'any',
+                            source: 'same',
+                            target: 'same',
+                          },
+                        ]
+                    ).map((converter) => (
+                      <NativeSelectOption key={converter.id} value={converter.id}>
+                        {converterDisplayName(converter)}
+                      </NativeSelectOption>
+                    ))}
+                  </NativeSelect>
+                </label>
               ))}
-            </NativeSelect>
-          </label>
-        ))}
-      </div>
+            </div>
 
-      <div className='grid gap-4 lg:grid-cols-2'>
-        {(
-          [
-            ['default_headers', 'Default Headers', '{}'],
-            ['default_query', 'Default Query', '{}'],
-            ['default_body_overrides', 'Default Body Overrides', '{}'],
-            ['detect_rules', 'Detection Rules', '[]'],
-          ] as const
-        ).map(([key, label, fallback]) => (
-          <label key={key} className='space-y-1.5'>
-            <span className='flex items-center justify-between gap-2'>
-              <span className='text-sm font-medium'>{t(label)}</span>
+            <div className='grid gap-4 lg:grid-cols-2'>
+              {(
+                [
+                  ['default_headers', 'Default Headers', '{}'],
+                  ['default_query', 'Default Query', '{}'],
+                  ['default_body_overrides', 'Default Body Overrides', '{}'],
+                  ['detect_rules', 'Detection Rules', '[]'],
+                ] as const
+              ).map(([key, label, fallback]) => (
+                <label key={key} className='space-y-1.5'>
+                  <span className='flex items-center justify-between gap-2'>
+                    <span className='text-sm font-medium'>{t(label)}</span>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='xs'
+                      onClick={() => formatField(key, fallback)}
+                    >
+                      {t('Format JSON')}
+                    </Button>
+                  </span>
+                  <Textarea
+                    value={formState[key]}
+                    onChange={(event) => setField(key, event.target.value)}
+                    className='min-h-28 font-mono text-xs'
+                    spellCheck={false}
+                  />
+                </label>
+              ))}
+            </div>
+
+            <div className='flex flex-wrap items-center justify-between gap-3 rounded-md border bg-slate-50 p-3 dark:bg-slate-900/60'>
+              <label className='flex items-center gap-2 text-sm'>
+                <Switch
+                  checked={formState.enabled}
+                  onCheckedChange={(checked) => setField('enabled', checked)}
+                />
+                {t('Enabled')}
+              </label>
+              <label className='flex items-center gap-2 text-sm'>
+                {t('Sort')}
+                <Input
+                  className='w-24'
+                  type='number'
+                  value={formState.sort}
+                  onChange={(event) =>
+                    setField('sort', Number(event.target.value))
+                  }
+                />
+              </label>
+            </div>
+          </div>
+
+          <SheetFooter className='border-t sm:flex-row sm:items-center sm:justify-between'>
+            <div>
+              {formState.id && (
+                <Button
+                  type='button'
+                  variant='outline'
+                  disabled={deleteMutation.isPending || saveMutation.isPending}
+                  onClick={deleteTemplate}
+                >
+                  <Trash2 data-icon='inline-start' />
+                  {t('Delete')}
+                </Button>
+              )}
+            </div>
+            <div className='flex items-center gap-2'>
+              <SheetClose render={<Button type='button' variant='outline' />}>
+                {t('Cancel')}
+              </SheetClose>
               <Button
                 type='button'
-                variant='outline'
-                size='xs'
-                onClick={() => formatField(key, fallback)}
+                disabled={deleteMutation.isPending || saveMutation.isPending}
+                onClick={saveTemplate}
               >
-                {t('Format JSON')}
+                <Save data-icon='inline-start' />
+                {saveMutation.isPending ? t('Saving...') : t('Save Template')}
               </Button>
-            </span>
-            <Textarea
-              value={formState[key]}
-              onChange={(event) => setField(key, event.target.value)}
-              className='min-h-28 font-mono text-xs'
-              spellCheck={false}
-            />
-          </label>
-        ))}
-      </div>
-
-      <div className='flex flex-wrap items-center justify-between gap-3'>
-        <label className='flex items-center gap-2 text-sm'>
-          <Switch
-            checked={formState.enabled}
-            onCheckedChange={(checked) => setField('enabled', checked)}
-          />
-          {t('Enabled')}
-        </label>
-        <label className='flex items-center gap-2 text-sm'>
-          {t('Sort')}
-          <Input
-            className='w-24'
-            type='number'
-            value={formState.sort}
-            onChange={(event) => setField('sort', Number(event.target.value))}
-          />
-        </label>
-        <div className='ml-auto flex items-center gap-2'>
-          {formState.id && (
-            <Button
-              type='button'
-              variant='outline'
-              disabled={deleteMutation.isPending || saveMutation.isPending}
-              onClick={deleteTemplate}
-            >
-              <Trash2 data-icon='inline-start' />
-              {t('Delete')}
-            </Button>
-          )}
-          <Button
-            type='button'
-            disabled={deleteMutation.isPending || saveMutation.isPending}
-            onClick={saveTemplate}
-          >
-            <Save data-icon='inline-start' />
-            {saveMutation.isPending ? t('Saving...') : t('Save Template')}
-          </Button>
-        </div>
-      </div>
+            </div>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }

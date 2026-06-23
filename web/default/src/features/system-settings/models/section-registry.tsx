@@ -90,6 +90,7 @@ const MODELS_SECTIONS = [
               settings['fusion_setting.charge_failed_candidates'],
             failed_candidate_quota:
               settings['fusion_setting.failed_candidate_quota'],
+            key_test_quota: settings['fusion_setting.key_test_quota'],
             max_judge_input_tokens:
               settings['fusion_setting.max_judge_input_tokens'],
             max_candidate_output_chars:
@@ -116,6 +117,10 @@ const MODELS_SECTIONS = [
               settings['fusion_setting.allowed_base_url_ports'],
             allowed_token_groups:
               settings['fusion_setting.allowed_token_groups'],
+            candidate_system_prompt:
+              settings['fusion_setting.candidate_system_prompt'],
+            judge_system_prompt:
+              settings['fusion_setting.judge_system_prompt'],
           },
         }}
       />

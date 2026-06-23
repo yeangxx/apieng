@@ -39,8 +39,8 @@ import { cn } from '@/lib/utils'
 
 type FusionConfigComboboxProps = {
   configs: FusionConfig[]
-  value?: string
-  onValueChange: (value: string) => void
+  values: string[]
+  onValuesChange: (values: string[]) => void
   placeholder?: string
   disabled?: boolean
 }
@@ -53,8 +53,13 @@ export function FusionConfigCombobox(props: FusionConfigComboboxProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [searchValue, setSearchValue] = useState('')
-  const selectedConfig = props.configs.find(
-    (config) => config.model_alias === props.value
+  const selectedValues = props.values.filter(Boolean)
+  const selectedValueSet = useMemo(
+    () => new Set(selectedValues),
+    [selectedValues]
+  )
+  const selectedConfigs = props.configs.filter((config) =>
+    selectedValueSet.has(config.model_alias)
   )
 
   const filteredConfigs = useMemo(() => {
@@ -69,10 +74,27 @@ export function FusionConfigCombobox(props: FusionConfigComboboxProps) {
   }, [props.configs, searchValue])
 
   const handleSelect = (alias: string) => {
-    props.onValueChange(alias)
-    setOpen(false)
+    if (selectedValueSet.has(alias)) {
+      props.onValuesChange(selectedValues.filter((value) => value !== alias))
+    } else {
+      props.onValuesChange([...selectedValues, alias])
+    }
     setSearchValue('')
   }
+
+  const selectedTitle =
+    selectedConfigs.length === 0
+      ? props.placeholder || t('Select Fusion configs')
+      : selectedConfigs.length === 1
+        ? selectedConfigs[0].name
+        : t('{{count}} Fusion configs selected', {
+            count: selectedConfigs.length,
+          })
+
+  const selectedDescription =
+    selectedConfigs.length === 0
+      ? ''
+      : selectedConfigs.map((config) => config.model_alias).join(', ')
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -90,13 +112,11 @@ export function FusionConfigCombobox(props: FusionConfigComboboxProps) {
       >
         <span className='min-w-0 flex-1'>
           <span className='block truncate font-medium'>
-            {selectedConfig
-              ? selectedConfig.name
-              : props.placeholder || t('Select a Fusion config')}
+            {selectedTitle}
           </span>
-          {selectedConfig && (
+          {selectedDescription && (
             <span className='text-muted-foreground block truncate text-xs'>
-              {selectedConfig.model_alias}
+              {selectedDescription}
             </span>
           )}
         </span>
@@ -127,7 +147,7 @@ export function FusionConfigCombobox(props: FusionConfigComboboxProps) {
                   <Check
                     className={cn(
                       'mt-0.5 h-4 w-4',
-                      props.value === config.model_alias
+                      selectedValueSet.has(config.model_alias)
                         ? 'opacity-100'
                         : 'opacity-0'
                     )}

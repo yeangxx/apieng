@@ -998,6 +998,36 @@ func TestFusionRelayTokenModelLimitForbidsAlias(t *testing.T) {
 	assert.Equal(t, int32(0), calls.Load())
 }
 
+func TestFusionRelayTokenModelLimitAllowsMultipleFusionAliases(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	server, calls := newFusionRelayTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a": fusionRelayResponse("candidate-a", "candidate answer", 10, 2),
+		"judge-model": fusionRelayResponse("judge-model", "final answer", 5, 3),
+	})
+	configureFusionRelayServer(t, server.URL, nil)
+	initialQuota := common.GetTrustQuota() + 1000
+	seedFusionRelayUserAndToken(t, 1, initialQuota, initialQuota)
+	key := createFusionRelayKey(t, 1, server.URL+"/v1")
+	createFusionRelayConfig(t, 1, key)
+	recorder, ctx := fusionRelayContext(t, gin.H{
+		"model": "fusion:research",
+		"messages": []gin.H{
+			{"role": "user", "content": "hello"},
+		},
+	}, 1)
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, map[string]bool{
+		"fusion:research": true,
+		"fusion:other":    true,
+	})
+	ctx.Set("token_quota", initialQuota)
+	common.SetContextKey(ctx, constant.ContextKeyUserQuota, initialQuota)
+
+	FusionChatCompletions(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, int32(2), calls.Load())
+}
+
 func TestFusionRelayRequiresFusionTokenGroup(t *testing.T) {
 	setupFusionControllerTestDB(t)
 	server, calls := newFusionRelayTLSServer(t, map[string]dto.OpenAITextResponse{})
@@ -1034,7 +1064,7 @@ func TestFusionRelayRequiresBoundFusionModelLimit(t *testing.T) {
 	FusionChatCompletions(ctx)
 
 	require.Equal(t, http.StatusForbidden, recorder.Code)
-	assert.Contains(t, recorder.Body.String(), "exactly one enabled Fusion model limit")
+	assert.Contains(t, recorder.Body.String(), "at least one enabled Fusion model limit")
 	assert.Equal(t, int32(0), calls.Load())
 }
 

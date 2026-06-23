@@ -394,6 +394,24 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case "fusion_setting.candidate_system_prompt":
+		err = fusion_setting.ValidateFusionSystemPrompt(option.Value.(string), "fusion candidate system prompt")
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "fusion_setting.judge_system_prompt":
+		err = fusion_setting.ValidateFusionSystemPrompt(option.Value.(string), "fusion judge system prompt")
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 	case "fusion_setting.allowed_base_url_domains":
 		err = validateFusionAllowedBaseURLDomainsOption(option.Value.(string))
 		if err != nil {

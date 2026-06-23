@@ -184,28 +184,30 @@ export function ApiKeysMutateDrawer({
   const onSubmit = async (data: ApiKeyFormValues) => {
     let nextData = data
     if (isFusionGroup) {
-      const fusionAlias = data.fusion_model_alias?.trim()
-      if (!fusionAlias) {
-        form.setError('fusion_model_alias', {
+      const fusionAliases = data.fusion_model_aliases
+        .map((alias) => alias.trim())
+        .filter(Boolean)
+      if (fusionAliases.length === 0) {
+        form.setError('fusion_model_aliases', {
           type: 'manual',
           message: t(
-            'Fusion token groups must bind exactly one Fusion config.'
+            'Fusion token groups must bind at least one Fusion config.'
           ),
         })
         toast.error(
-          t('Fusion token groups must bind exactly one Fusion config.')
+          t('Fusion token groups must bind at least one Fusion config.')
         )
         return
       }
       nextData = {
         ...data,
-        fusion_model_alias: fusionAlias,
-        model_limits: [fusionAlias],
+        fusion_model_aliases: fusionAliases,
+        model_limits: fusionAliases,
       }
     } else {
       nextData = {
         ...data,
-        fusion_model_alias: '',
+        fusion_model_aliases: [],
         model_limits: data.model_limits.filter(
           (model) => !model.startsWith('fusion:')
         ),
@@ -293,7 +295,7 @@ export function ApiKeysMutateDrawer({
     : t('Enter quota in {{currency}}', { currency: currencyLabel })
   const selectedGroup = form.watch('group')
   const unlimitedQuota = form.watch('unlimited_quota')
-  const selectedFusionModelAlias = form.watch('fusion_model_alias')
+  const selectedFusionModelAliases = form.watch('fusion_model_aliases')
   const selectedGroupOption = groups.find(
     (group) => group.value === selectedGroup
   )
@@ -303,21 +305,18 @@ export function ApiKeysMutateDrawer({
     if (!selectedGroup || groups.length === 0) return
     const currentLimits = form.getValues('model_limits')
     if (isFusionGroup) {
-      const existingFusionAlias =
-        selectedFusionModelAlias ||
-        currentLimits.find((model) => model.startsWith('fusion:')) ||
-        ''
-      form.setValue('fusion_model_alias', existingFusionAlias)
-      form.setValue(
-        'model_limits',
-        existingFusionAlias ? [existingFusionAlias] : []
-      )
+      const existingFusionAliases =
+        selectedFusionModelAliases.length > 0
+          ? selectedFusionModelAliases
+          : currentLimits.filter((model) => model.startsWith('fusion:'))
+      form.setValue('fusion_model_aliases', existingFusionAliases)
+      form.setValue('model_limits', existingFusionAliases)
       form.setValue('cross_group_retry', false)
       return
     }
 
-    if (selectedFusionModelAlias) {
-      form.setValue('fusion_model_alias', '')
+    if (selectedFusionModelAliases.length > 0) {
+      form.setValue('fusion_model_aliases', [])
     }
     const ordinaryLimits = currentLimits.filter(
       (model) => !model.startsWith('fusion:')
@@ -329,7 +328,7 @@ export function ApiKeysMutateDrawer({
     form,
     groups.length,
     isFusionGroup,
-    selectedFusionModelAlias,
+    selectedFusionModelAliases,
     selectedGroup,
   ])
 
@@ -404,19 +403,19 @@ export function ApiKeysMutateDrawer({
               {isFusionGroup && (
                 <FormField
                   control={form.control}
-                  name='fusion_model_alias'
+                  name='fusion_model_aliases'
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>{t('Fusion Config')}</FormLabel>
+                      <FormLabel>{t('Fusion Configs')}</FormLabel>
                       <FormControl>
                         <FusionConfigCombobox
                           configs={enabledFusionConfigs}
-                          value={field.value}
-                          onValueChange={(value) => {
-                            field.onChange(value)
-                            form.setValue('model_limits', value ? [value] : [])
+                          values={field.value ?? []}
+                          onValuesChange={(values) => {
+                            field.onChange(values)
+                            form.setValue('model_limits', values)
                           }}
-                          placeholder={t('Select a Fusion config')}
+                          placeholder={t('Select Fusion configs')}
                           disabled={enabledFusionConfigs.length === 0}
                         />
                       </FormControl>
@@ -424,7 +423,7 @@ export function ApiKeysMutateDrawer({
                         {enabledFusionConfigs.length === 0
                           ? t('No enabled Fusion configs available')
                           : t(
-                              'Select one enabled Fusion config. This key will only be able to call that Fusion alias.'
+                              'Select one or more enabled Fusion configs. This key can call any selected Fusion alias.'
                             )}
                       </FormDescription>
                       <FormMessage />

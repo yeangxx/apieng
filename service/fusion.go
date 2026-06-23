@@ -1049,19 +1049,27 @@ func runFusionJudgeWithDelta(ctx context.Context, client *http.Client, userID in
 	}
 	judgePrompt := buildFusionJudgePrompt(original.Messages, candidates, config.JudgePrompt, quality)
 	judgePrompt = trimFusionJudgePrompt(judgePrompt, config.JudgeModel, fusion_setting.GetFusionMaxJudgeInputTokens())
-	judgeRequest := &dto.GeneralOpenAIRequest{
-		Model: config.JudgeModel,
-		Messages: []dto.Message{
-			{
-				Role:    "system",
-				Content: fusionJudgeSystemPrompt,
-			},
-			{
-				Role:    "user",
-				Content: judgePrompt,
-			},
+	judgeMessages := make([]dto.Message, 0, 3)
+	if adminPrompt := fusion_setting.GetFusionJudgeSystemPrompt(); adminPrompt != "" {
+		judgeMessages = append(judgeMessages, dto.Message{
+			Role:    "system",
+			Content: adminPrompt,
+		})
+	}
+	judgeMessages = append(judgeMessages,
+		dto.Message{
+			Role:    "system",
+			Content: fusionJudgeSystemPrompt,
 		},
-		Stream: common.GetPointer(fusionShouldStreamCandidate(original)),
+		dto.Message{
+			Role:    "user",
+			Content: judgePrompt,
+		},
+	)
+	judgeRequest := &dto.GeneralOpenAIRequest{
+		Model:    config.JudgeModel,
+		Messages: judgeMessages,
+		Stream:   common.GetPointer(fusionShouldStreamCandidate(original)),
 	}
 	if fusionShouldStreamCandidate(original) {
 		callCtx, cancel := context.WithCancel(ctx)
@@ -1222,14 +1230,22 @@ func cloneFusionChatRequest(original *dto.GeneralOpenAIRequest, modelName string
 		cloned.Stream = common.GetPointer(false)
 		cloned.StreamOptions = nil
 	}
+	candidateSystemMessages := make([]dto.Message, 0, 2)
+	if adminPrompt := fusion_setting.GetFusionCandidateSystemPrompt(); adminPrompt != "" {
+		candidateSystemMessages = append(candidateSystemMessages, dto.Message{
+			Role:    "system",
+			Content: adminPrompt,
+		})
+	}
 	if candidateBrief {
-		cloned.Messages = append([]dto.Message{
-			{
-				Role:    "system",
-				Content: fusionStreamCandidateBriefPrompt,
-			},
-		}, cloned.Messages...)
+		candidateSystemMessages = append(candidateSystemMessages, dto.Message{
+			Role:    "system",
+			Content: fusionStreamCandidateBriefPrompt,
+		})
 		capFusionCandidateRequestTokens(&cloned, fusion_setting.GetFusionStreamCandidateMaxTokens())
+	}
+	if len(candidateSystemMessages) > 0 {
+		cloned.Messages = append(candidateSystemMessages, cloned.Messages...)
 	}
 	return &cloned, nil
 }
@@ -1438,6 +1454,8 @@ func fusionResultCacheKey(request FusionEngineRequest) (string, error) {
 		"config_updated_at":          request.Config.UpdatedAt,
 		"max_candidate_output_chars": fusion_setting.GetFusionMaxCandidateOutputChars(),
 		"max_judge_input_tokens":     fusion_setting.GetFusionMaxJudgeInputTokens(),
+		"candidate_system_prompt":    fusion_setting.GetFusionCandidateSystemPrompt(),
+		"judge_system_prompt":        fusion_setting.GetFusionJudgeSystemPrompt(),
 		"stream_candidate_brief":     fusion_setting.ShouldFusionUseStreamCandidateBrief(),
 		"stream_candidate_tokens":    fusion_setting.GetFusionStreamCandidateMaxTokens(),
 		"quality_mode":               request.Config.QualityMode,

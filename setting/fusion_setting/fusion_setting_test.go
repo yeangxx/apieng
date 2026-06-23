@@ -1,6 +1,7 @@
 package fusion_setting
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/setting/config"
@@ -39,6 +40,8 @@ func TestFusionSettingDefaults(t *testing.T) {
 	assert.Equal(t, []string{}, GetFusionAllowedBaseURLDomains())
 	assert.Equal(t, []int{443}, GetFusionAllowedBaseURLPorts())
 	assert.Equal(t, []string{}, GetFusionAllowedTokenGroups())
+	assert.Equal(t, "", GetFusionCandidateSystemPrompt())
+	assert.Equal(t, "", GetFusionJudgeSystemPrompt())
 	assert.False(t, IsFusionTokenGroup("fusion-basic"))
 }
 
@@ -61,6 +64,8 @@ func TestFusionSettingLoadFromDB(t *testing.T) {
 		"fusion_setting.allowed_base_url_domains":         `["example.com","*.example.org"]`,
 		"fusion_setting.allowed_base_url_ports":           `[443,8443]`,
 		"fusion_setting.allowed_token_groups":             `["fusion-basic","fusion-pro"]`,
+		"fusion_setting.candidate_system_prompt":          "candidate admin prompt",
+		"fusion_setting.judge_system_prompt":              "judge admin prompt",
 	})
 
 	require.NoError(t, err)
@@ -78,6 +83,8 @@ func TestFusionSettingLoadFromDB(t *testing.T) {
 	assert.Equal(t, []string{"example.com", "*.example.org"}, GetFusionAllowedBaseURLDomains())
 	assert.Equal(t, []int{443, 8443}, GetFusionAllowedBaseURLPorts())
 	assert.Equal(t, []string{"fusion-basic", "fusion-pro"}, GetFusionAllowedTokenGroups())
+	assert.Equal(t, "candidate admin prompt", GetFusionCandidateSystemPrompt())
+	assert.Equal(t, "judge admin prompt", GetFusionJudgeSystemPrompt())
 	assert.True(t, IsFusionTokenGroup("fusion-basic"))
 	assert.False(t, IsFusionTokenGroup("default"))
 }
@@ -96,4 +103,10 @@ func TestValidateFusionBillingExprRejectsTieredBillingVariables(t *testing.T) {
 	err := ValidateFusionBillingExpr("p + c")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "compile failed")
+}
+
+func TestValidateFusionSystemPromptRejectsOversizedPrompt(t *testing.T) {
+	err := ValidateFusionSystemPrompt(strings.Repeat("a", FusionSystemPromptMaxBytes+1), "fusion prompt")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no more than")
 }

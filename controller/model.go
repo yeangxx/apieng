@@ -205,6 +205,17 @@ func getModelListGroups(c *gin.Context) (modelListGroups, error) {
 	}, nil
 }
 
+func shouldExposeModelInList(c *gin.Context, modelName string, acceptUnsetRatioModel bool) bool {
+	if isFusionModelAlias(modelName) {
+		config, err := model.GetFusionConfigByUserAndAlias(c.GetInt("id"), modelName)
+		return err == nil && config.Enabled
+	}
+	if acceptUnsetRatioModel {
+		return true
+	}
+	return helper.HasModelBillingConfig(modelName)
+}
+
 func ListModels(c *gin.Context, modelType int) {
 	acceptUnsetRatioModel := operation_setting.SelfUseModeEnabled
 	if !acceptUnsetRatioModel {
@@ -237,10 +248,8 @@ func ListModels(c *gin.Context, modelType int) {
 			tokenModelLimit = map[string]bool{}
 		}
 		for allowModel, _ := range tokenModelLimit {
-			if !acceptUnsetRatioModel {
-				if !helper.HasModelBillingConfig(allowModel) {
-					continue
-				}
+			if !shouldExposeModelInList(c, allowModel, acceptUnsetRatioModel) {
+				continue
 			}
 			userModelNames = append(userModelNames, allowModel)
 		}
@@ -259,10 +268,8 @@ func ListModels(c *gin.Context, modelType int) {
 			models = model.GetGroupEnabledModels(ownerGroups[0])
 		}
 		for _, modelName := range models {
-			if !acceptUnsetRatioModel {
-				if !helper.HasModelBillingConfig(modelName) {
-					continue
-				}
+			if !shouldExposeModelInList(c, modelName, acceptUnsetRatioModel) {
+				continue
 			}
 			userModelNames = append(userModelNames, modelName)
 		}

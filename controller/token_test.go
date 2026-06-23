@@ -573,15 +573,41 @@ func TestAddTokenValidatesFusionBinding(t *testing.T) {
 			group:              "fusion-basic",
 			modelLimitsEnabled: false,
 			modelLimits:        "",
-			wantMessage:        "exactly one enabled Fusion model limit",
+			wantMessage:        "at least one enabled Fusion model limit",
 		},
 		{
-			name:               "fusion group with multiple model limits",
+			name:               "fusion group with multiple enabled fusion model limits",
 			userID:             1,
 			group:              "fusion-basic",
 			modelLimitsEnabled: true,
 			modelLimits:        "fusion:research,fusion:other",
-			wantMessage:        "exactly one enabled Fusion model limit",
+			seed: func(t *testing.T, db *gorm.DB) {
+				seedFusionConfigForTokenTest(t, db, 1, "fusion:research", true)
+				seedFusionConfigForTokenTest(t, db, 1, "fusion:other", true)
+			},
+			wantSuccess: true,
+		},
+		{
+			name:               "fusion group with ordinary model limit",
+			userID:             1,
+			group:              "fusion-basic",
+			modelLimitsEnabled: true,
+			modelLimits:        "fusion:research,gpt-4o-mini",
+			seed: func(t *testing.T, db *gorm.DB) {
+				seedFusionConfigForTokenTest(t, db, 1, "fusion:research", true)
+			},
+			wantMessage: "can only bind Fusion models",
+		},
+		{
+			name:               "fusion group with duplicate model limit",
+			userID:             1,
+			group:              "fusion-basic",
+			modelLimitsEnabled: true,
+			modelLimits:        "fusion:research,fusion:research",
+			seed: func(t *testing.T, db *gorm.DB) {
+				seedFusionConfigForTokenTest(t, db, 1, "fusion:research", true)
+			},
+			wantMessage: "duplicated",
 		},
 		{
 			name:               "fusion group with foreign alias",

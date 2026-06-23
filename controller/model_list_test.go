@@ -43,7 +43,7 @@ func setupModelListControllerTestDB(t *testing.T) *gorm.DB {
 	model.DB = db
 	model.LOG_DB = db
 
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}, &model.FusionConfig{}))
 
 	t.Cleanup(func() {
 		sqlDB, err := db.DB()
@@ -241,4 +241,30 @@ func TestListModelsTokenLimitIncludesTieredBillingModel(t *testing.T) {
 	require.NotContains(t, ids, "zz-token-tiered-empty-expr-model")
 	require.NotContains(t, ids, "zz-token-tiered-missing-expr-model")
 	require.NotContains(t, ids, "zz-token-unpriced-model")
+}
+
+func TestListModelsTokenLimitIncludesMultipleFusionAliases(t *testing.T) {
+	withSelfUseModeDisabled(t)
+	setupModelListControllerTestDB(t)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	ctx.Set("id", 1001)
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "fusion-basic")
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, true)
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, map[string]bool{
+		"fusion:research": true,
+		"fusion:code":     true,
+	})
+	seedFusionConfigForTokenTest(t, model.DB, 1001, "fusion:research", true)
+	seedFusionConfigForTokenTest(t, model.DB, 1001, "fusion:code", true)
+	seedFusionConfigForTokenTest(t, model.DB, 1001, "fusion:other", true)
+
+	ListModels(ctx, constant.ChannelTypeOpenAI)
+
+	ids := decodeListModelsResponse(t, recorder)
+	require.Contains(t, ids, "fusion:research")
+	require.Contains(t, ids, "fusion:code")
+	require.NotContains(t, ids, "fusion:other")
 }

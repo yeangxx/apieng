@@ -90,10 +90,11 @@ const defaultModelSettings: ModelSettings = {
   'fusion_setting.service_model_name': 'fusion-service',
   'fusion_setting.billing_mode': 'expr',
   'fusion_setting.billing_expr':
-    'max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 + failed * failed_quota)',
+    'max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 + (rp + rc) * 0.20 + (ep + ec) * 0.50 + failed * failed_quota)',
   'fusion_setting.minimum_quota': 1,
   'fusion_setting.charge_failed_candidates': false,
   'fusion_setting.failed_candidate_quota': 0,
+  'fusion_setting.key_test_quota': 1,
   'fusion_setting.max_judge_input_tokens': 128000,
   'fusion_setting.max_candidate_output_chars': 6000,
   'fusion_setting.stream_candidate_brief': true,
@@ -107,6 +108,8 @@ const defaultModelSettings: ModelSettings = {
   'fusion_setting.allowed_base_url_domains': '[]',
   'fusion_setting.allowed_base_url_ports': '[443]',
   'fusion_setting.allowed_token_groups': '[]',
+  'fusion_setting.candidate_system_prompt': '',
+  'fusion_setting.judge_system_prompt': '',
 }
 
 export function ModelSettings() {

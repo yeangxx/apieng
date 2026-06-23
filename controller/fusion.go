@@ -218,7 +218,7 @@ func validateFusionRelayChatRequest(request *dto.GeneralOpenAIRequest) error {
 
 func enforceFusionTokenModelLimit(c *gin.Context, modelName string) bool {
 	if !common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled) {
-		fusionOpenAIError(c, http.StatusForbidden, "Fusion token group requires exactly one enabled Fusion model limit", types.ErrorCodeAccessDenied)
+		fusionOpenAIError(c, http.StatusForbidden, "Fusion token group requires at least one enabled Fusion model limit", types.ErrorCodeAccessDenied)
 		return false
 	}
 	value, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
@@ -242,8 +242,8 @@ func enforceFusionTokenModelLimit(c *gin.Context, modelName string) bool {
 		}
 		normalizedLimits[ratio_setting.FormatMatchingModelName(limit)] = true
 	}
-	if len(normalizedLimits) != 1 {
-		fusionOpenAIError(c, http.StatusForbidden, "Fusion token group requires exactly one enabled Fusion model limit", types.ErrorCodeAccessDenied)
+	if len(normalizedLimits) == 0 {
+		fusionOpenAIError(c, http.StatusForbidden, "Fusion token group requires at least one enabled Fusion model limit", types.ErrorCodeAccessDenied)
 		return false
 	}
 	if _, ok := normalizedLimits[matchName]; !ok {

@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	BillingModeExpr          = "expr"
-	DefaultBillingExpression = "max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 + (rp + rc) * 0.20 + (ep + ec) * 0.50 + failed * failed_quota)"
+	BillingModeExpr            = "expr"
+	DefaultBillingExpression   = "max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 + (rp + rc) * 0.20 + (ep + ec) * 0.50 + failed * failed_quota)"
+	FusionSystemPromptMaxBytes = 32768
 )
 
 type FusionSetting struct {
@@ -42,6 +43,8 @@ type FusionSetting struct {
 	AllowedBaseURLDomains        []string `json:"allowed_base_url_domains"`
 	AllowedBaseURLPorts          []int    `json:"allowed_base_url_ports"`
 	AllowedTokenGroups           []string `json:"allowed_token_groups"`
+	CandidateSystemPrompt        string   `json:"candidate_system_prompt"`
+	JudgeSystemPrompt            string   `json:"judge_system_prompt"`
 }
 
 var fusionSetting = defaultFusionSetting()
@@ -79,6 +82,8 @@ func defaultFusionSetting() FusionSetting {
 		AllowedBaseURLDomains:        []string{},
 		AllowedBaseURLPorts:          []int{443},
 		AllowedTokenGroups:           []string{},
+		CandidateSystemPrompt:        "",
+		JudgeSystemPrompt:            "",
 	}
 }
 
@@ -200,6 +205,14 @@ func GetFusionAllowedTokenGroups() []string {
 	return append([]string{}, fusionSetting.AllowedTokenGroups...)
 }
 
+func GetFusionCandidateSystemPrompt() string {
+	return strings.TrimSpace(fusionSetting.CandidateSystemPrompt)
+}
+
+func GetFusionJudgeSystemPrompt() string {
+	return strings.TrimSpace(fusionSetting.JudgeSystemPrompt)
+}
+
 func IsFusionTokenGroup(group string) bool {
 	group = strings.TrimSpace(group)
 	if group == "" {
@@ -221,6 +234,13 @@ func ValidateFusionBillingExpr(exprStr string) error {
 	_, err := expr.Compile(exprStr, expr.Env(fusionBillingExprEnv()), expr.AsFloat64())
 	if err != nil {
 		return fmt.Errorf("fusion billing expression compile failed: %w", err)
+	}
+	return nil
+}
+
+func ValidateFusionSystemPrompt(prompt string, label string) error {
+	if len(prompt) > FusionSystemPromptMaxBytes {
+		return fmt.Errorf("%s must be no more than %d bytes", label, FusionSystemPromptMaxBytes)
 	}
 	return nil
 }

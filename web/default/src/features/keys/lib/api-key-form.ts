@@ -36,7 +36,7 @@ export function getApiKeyFormSchema(t: TFunction) {
       expired_time: z.date().optional(),
       unlimited_quota: z.boolean(),
       model_limits: z.array(z.string()),
-      fusion_model_alias: z.string().optional(),
+      fusion_model_aliases: z.array(z.string()),
       allow_ips: z.string().optional(),
       group: z.string().optional(),
       cross_group_retry: z.boolean().optional(),
@@ -72,7 +72,7 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   expired_time: undefined,
   unlimited_quota: true,
   model_limits: [],
-  fusion_model_alias: '',
+  fusion_model_aliases: [],
   allow_ips: '',
   group: DEFAULT_GROUP,
   cross_group_retry: true,
@@ -99,8 +99,11 @@ export function getApiKeyFormDefaultValues(
 export function transformFormDataToPayload(
   data: ApiKeyFormValues
 ): ApiKeyFormData {
-  const fusionModelAlias = data.fusion_model_alias?.trim()
-  const modelLimits = fusionModelAlias ? [fusionModelAlias] : data.model_limits
+  const fusionModelAliases = data.fusion_model_aliases
+    .map((alias) => alias.trim())
+    .filter(Boolean)
+  const modelLimits =
+    fusionModelAliases.length > 0 ? fusionModelAliases : data.model_limits
   return {
     name: data.name,
     remain_quota: data.unlimited_quota
@@ -127,8 +130,8 @@ export function transformApiKeyToFormDefaults(
   const modelLimits = apiKey.model_limits
     ? apiKey.model_limits.split(',').filter(Boolean)
     : []
-  const fusionModelAlias =
-    modelLimits.find((model) => model.startsWith('fusion:')) ?? ''
+  const fusionModelAliases =
+    modelLimits.filter((model) => model.startsWith('fusion:'))
   return {
     name: apiKey.name,
     remain_quota_dollars: apiKey.unlimited_quota
@@ -140,7 +143,7 @@ export function transformApiKeyToFormDefaults(
         : undefined,
     unlimited_quota: apiKey.unlimited_quota,
     model_limits: modelLimits,
-    fusion_model_alias: fusionModelAlias,
+    fusion_model_aliases: fusionModelAliases,
     allow_ips: apiKey.allow_ips || '',
     group: apiKey.group || DEFAULT_GROUP,
     cross_group_retry: !!apiKey.cross_group_retry,

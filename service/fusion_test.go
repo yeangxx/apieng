@@ -1288,6 +1288,53 @@ func TestFusionEngineNonStreamUsesBriefCandidateRequests(t *testing.T) {
 	assert.Nil(t, judgeRequest.MaxTokens)
 }
 
+func TestFusionEnginePrependsConfiguredCandidateAndJudgePrompts(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	server, state := newFusionTestTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a": fusionTestResponse("candidate-a", "candidate brief", 10, 2),
+		"judge-model": fusionTestResponse("judge-model", "final", 30, 7),
+	}, nil)
+	defer server.Close()
+	configureFusionServiceTestBaseURL(t, server.URL, map[string]string{
+		"fusion_setting.stream_candidate_brief":      "true",
+		"fusion_setting.stream_candidate_max_tokens": "384",
+		"fusion_setting.candidate_system_prompt":     "Admin candidate policy",
+		"fusion_setting.judge_system_prompt":         "Admin judge policy",
+	})
+
+	candidateKey := createFusionServiceKey(t, 1, "candidate", server.URL+"/v1", "candidate-a")
+	judgeKey := createFusionServiceKey(t, 1, "judge", server.URL+"/v1", "judge-model")
+	fusionConfig := createFusionServiceConfig(t, 1, []int{candidateKey.Id}, judgeKey.Id, "judge-model", 1)
+	request := fusionEngineTestRequest(fusionConfig, server.Client())
+	request.Request.Stream = common.GetPointer(false)
+
+	result, err := RunFusionEngine(context.Background(), request)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	require.Len(t, state.modelBodies["candidate-a"], 1)
+	candidateRequest := state.modelBodies["candidate-a"][0]
+	require.Len(t, candidateRequest.Messages, 3)
+	assert.Equal(t, "system", candidateRequest.Messages[0].Role)
+	assert.Equal(t, "Admin candidate policy", candidateRequest.Messages[0].StringContent())
+	assert.Equal(t, "system", candidateRequest.Messages[1].Role)
+	assert.Contains(t, candidateRequest.Messages[1].StringContent(), "Fusion candidate brief")
+	assert.Equal(t, "user", candidateRequest.Messages[2].Role)
+
+	require.Len(t, state.modelBodies["judge-model"], 1)
+	judgeRequest := state.modelBodies["judge-model"][0]
+	require.Len(t, judgeRequest.Messages, 3)
+	assert.Equal(t, "system", judgeRequest.Messages[0].Role)
+	assert.Equal(t, "Admin judge policy", judgeRequest.Messages[0].StringContent())
+	assert.Equal(t, "system", judgeRequest.Messages[1].Role)
+	assert.Contains(t, judgeRequest.Messages[1].StringContent(), "Fusion judge")
+	assert.Equal(t, "user", judgeRequest.Messages[2].Role)
+	assert.NotContains(t, judgeRequest.Messages[0].StringContent(), "Fusion candidate brief")
+	assert.Nil(t, judgeRequest.MaxTokens)
+}
+
 func TestFusionEngineAutoSimpleDirectRouteUsesDirectModel(t *testing.T) {
 	setupFusionServiceTestDB(t)
 	server, state := newFusionTestTLSServer(t, map[string]dto.OpenAITextResponse{
@@ -1517,6 +1564,36 @@ func TestFusionEngineResultCacheHitSkipsUpstreamAndBillsMinimumPath(t *testing.T
 	defer state.mu.Unlock()
 	assert.Equal(t, 1, state.modelCalls["candidate-a"])
 	assert.Equal(t, 1, state.modelCalls["judge-model"])
+}
+
+func TestFusionResultCacheKeyIncludesConfiguredPrompts(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"fusion_setting.candidate_system_prompt": "candidate prompt v1",
+		"fusion_setting.judge_system_prompt":     "judge prompt v1",
+	}))
+	candidateKey := createFusionServiceKey(t, 1, "candidate", "https://example.com/v1", "candidate-a")
+	judgeKey := createFusionServiceKey(t, 1, "judge", "https://example.com/v1", "judge-model")
+	fusionConfig := createFusionServiceConfig(t, 1, []int{candidateKey.Id}, judgeKey.Id, "judge-model", 1)
+	request := fusionEngineTestRequest(fusionConfig, http.DefaultClient)
+
+	firstKey, err := fusionResultCacheKey(request)
+	require.NoError(t, err)
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"fusion_setting.candidate_system_prompt": "candidate prompt v2",
+		"fusion_setting.judge_system_prompt":     "judge prompt v1",
+	}))
+	secondKey, err := fusionResultCacheKey(request)
+	require.NoError(t, err)
+	require.NotEqual(t, firstKey, secondKey)
+
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"fusion_setting.candidate_system_prompt": "candidate prompt v2",
+		"fusion_setting.judge_system_prompt":     "judge prompt v2",
+	}))
+	thirdKey, err := fusionResultCacheKey(request)
+	require.NoError(t, err)
+	assert.NotEqual(t, secondKey, thirdKey)
 }
 
 func TestFusionEngineParsesStreamingToolCallCandidate(t *testing.T) {
