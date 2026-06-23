@@ -11,7 +11,7 @@ import (
 
 const (
 	BillingModeExpr          = "expr"
-	DefaultBillingExpression = "max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 + failed * failed_quota)"
+	DefaultBillingExpression = "max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 + (rp + rc) * 0.20 + (ep + ec) * 0.50 + failed * failed_quota)"
 )
 
 type FusionSetting struct {
@@ -227,24 +227,32 @@ func ValidateFusionBillingExpr(exprStr string) error {
 
 func fusionBillingExprEnv() map[string]interface{} {
 	return map[string]interface{}{
-		"cp":                   float64(0),
-		"cc":                   float64(0),
-		"jp":                   float64(0),
-		"jc":                   float64(0),
-		"candidate_prompt":     float64(0),
-		"candidate_completion": float64(0),
-		"judge_prompt":         float64(0),
-		"judge_completion":     float64(0),
-		"failed":               float64(0),
-		"failed_prompt":        float64(0),
-		"failed_quota":         float64(0),
-		"success":              float64(0),
-		"total":                float64(0),
-		"min_quota":            float64(0),
-		"max":                  math.Max,
-		"min":                  math.Min,
-		"abs":                  math.Abs,
-		"ceil":                 math.Ceil,
-		"floor":                math.Floor,
+		"cp":                    float64(0),
+		"cc":                    float64(0),
+		"jp":                    float64(0),
+		"jc":                    float64(0),
+		"rp":                    float64(0),
+		"rc":                    float64(0),
+		"ep":                    float64(0),
+		"ec":                    float64(0),
+		"candidate_prompt":      float64(0),
+		"candidate_completion":  float64(0),
+		"judge_prompt":          float64(0),
+		"judge_completion":      float64(0),
+		"ranker_prompt":         float64(0),
+		"ranker_completion":     float64(0),
+		"escalation_prompt":     float64(0),
+		"escalation_completion": float64(0),
+		"failed":                float64(0),
+		"failed_prompt":         float64(0),
+		"failed_quota":          float64(0),
+		"success":               float64(0),
+		"total":                 float64(0),
+		"min_quota":             float64(0),
+		"max":                   math.Max,
+		"min":                   math.Min,
+		"abs":                   math.Abs,
+		"ceil":                  math.Ceil,
+		"floor":                 math.Floor,
 	}
 }

@@ -317,14 +317,38 @@ func buildFusionPreConsumeInput(config *model.FusionConfig, request *dto.General
 		completionTokens = 1
 	}
 	candidateCount := len(candidates)
-	return service.FusionBillingInput{
+	input := service.FusionBillingInput{
 		CandidatePromptTokens:     promptTokens * candidateCount,
 		CandidateCompletionTokens: completionTokens * candidateCount,
 		JudgePromptTokens:         promptTokens + completionTokens*candidateCount,
 		JudgeCompletionTokens:     completionTokens,
 		SuccessfulCandidates:      candidateCount,
 		TotalCandidates:           candidateCount,
-	}, nil
+	}
+	if fusionCanPreConsumeQualityCalls(config, request) {
+		rankerCompletionTokens := completionTokens
+		if rankerCompletionTokens > 512 {
+			rankerCompletionTokens = 512
+		}
+		input.RankerPromptTokens = promptTokens + completionTokens*candidateCount
+		input.RankerCompletionTokens = rankerCompletionTokens
+		if config.QualityMode == model.FusionQualityModeGuarded {
+			input.EscalationPromptTokens = promptTokens + completionTokens*candidateCount
+			input.EscalationCompletionTokens = completionTokens
+		}
+	}
+	return input, nil
+}
+
+func fusionCanPreConsumeQualityCalls(config *model.FusionConfig, request *dto.GeneralOpenAIRequest) bool {
+	if config == nil || request == nil {
+		return false
+	}
+	config.Normalize()
+	if config.QualityMode != model.FusionQualityModeRanked && config.QualityMode != model.FusionQualityModeGuarded {
+		return false
+	}
+	return service.FusionCanUseTextQualityControl(request)
 }
 
 func buildFusionRelayInfo(c *gin.Context, request *dto.GeneralOpenAIRequest) (*relaycommon.RelayInfo, error) {
@@ -1406,11 +1430,51 @@ func buildFusionLogOther(relayInfo *relaycommon.RelayInfo, result *service.Fusio
 		"latency_ms":        result.Judge.LatencyMS,
 		"status":            result.Judge.UpstreamStatus,
 	}
+	if result.Quality.Mode != "" {
+		other["quality_mode"] = result.Quality.Mode
+		other["quality_score"] = result.Quality.Score
+		other["quality_confidence"] = result.Quality.Confidence
+		other["quality_reasons"] = result.Quality.Reasons
+		other["quality_included_candidates"] = result.Quality.IncludedCandidateIndices
+		other["quality_rejected_candidates"] = result.Quality.RejectedCandidates
+		other["quality_escalation_triggered"] = result.Quality.EscalationTriggered
+		if result.Quality.SkippedReason != "" {
+			other["quality_skipped_reason"] = result.Quality.SkippedReason
+		}
+	}
+	if result.Ranker.KeyID != 0 || result.Ranker.Model != "" || result.Ranker.UpstreamStatus != 0 {
+		other["ranker"] = map[string]interface{}{
+			"key_id":            result.Ranker.KeyID,
+			"model":             result.Ranker.Model,
+			"success":           result.Ranker.Success,
+			"prompt_tokens":     result.Ranker.Usage.PromptTokens,
+			"completion_tokens": result.Ranker.Usage.CompletionTokens,
+			"latency_ms":        result.Ranker.LatencyMS,
+			"status":            result.Ranker.UpstreamStatus,
+			"error":             result.Ranker.SanitizedError,
+		}
+	}
+	if result.Escalation.KeyID != 0 || result.Escalation.Model != "" || result.Escalation.UpstreamStatus != 0 {
+		other["escalation"] = map[string]interface{}{
+			"key_id":            result.Escalation.KeyID,
+			"model":             result.Escalation.Model,
+			"success":           result.Escalation.Success,
+			"prompt_tokens":     result.Escalation.Usage.PromptTokens,
+			"completion_tokens": result.Escalation.Usage.CompletionTokens,
+			"latency_ms":        result.Escalation.LatencyMS,
+			"status":            result.Escalation.UpstreamStatus,
+			"error":             result.Escalation.SanitizedError,
+		}
+	}
 	input := service.BuildFusionBillingInput(result)
 	other["candidate_prompt_tokens"] = input.CandidatePromptTokens
 	other["candidate_completion_tokens"] = input.CandidateCompletionTokens
 	other["judge_prompt_tokens"] = input.JudgePromptTokens
 	other["judge_completion_tokens"] = input.JudgeCompletionTokens
+	other["ranker_prompt_tokens"] = input.RankerPromptTokens
+	other["ranker_completion_tokens"] = input.RankerCompletionTokens
+	other["escalation_prompt_tokens"] = input.EscalationPromptTokens
+	other["escalation_completion_tokens"] = input.EscalationCompletionTokens
 	other["failed_candidates"] = input.FailedCandidates
 	other["failed_prompt_tokens"] = input.FailedPromptTokens
 	if billingResult, err := service.RunFusionBillingExpr(policy.Expression, input, policy); err == nil {
@@ -2722,9 +2786,21 @@ func prepareFusionConfig(userId int, req dto.FusionConfigCreateRequest) (*model.
 	req.Name = strings.TrimSpace(req.Name)
 	req.ModelAlias = strings.TrimSpace(req.ModelAlias)
 	req.JudgeModel = strings.TrimSpace(req.JudgeModel)
+	req.RankerModel = strings.TrimSpace(req.RankerModel)
+	req.EscalationModel = strings.TrimSpace(req.EscalationModel)
+	req.CandidateSamplingMode = strings.TrimSpace(req.CandidateSamplingMode)
 	req.Strategy = strings.TrimSpace(req.Strategy)
 	if req.Strategy == "" {
 		req.Strategy = model.FusionStrategySynthesize
+	}
+	if req.QualityMode == "" {
+		req.QualityMode = model.FusionQualityModeOff
+	}
+	if req.QualityThreshold <= 0 {
+		req.QualityThreshold = model.FusionDefaultQualityThreshold
+	}
+	if req.CandidateSamplingMode == "" {
+		req.CandidateSamplingMode = model.FusionCandidateSamplingModeConfigured
 	}
 	if req.Name == "" {
 		return nil, errors.New("name is required")
@@ -2744,6 +2820,15 @@ func prepareFusionConfig(userId int, req dto.FusionConfigCreateRequest) (*model.
 	}
 	if len(candidates) == 0 {
 		return nil, errors.New("at least one candidate model is required")
+	}
+	if req.RankerTopK <= 0 {
+		req.RankerTopK = model.FusionDefaultRankerTopK
+		if req.RankerTopK > len(candidates) {
+			req.RankerTopK = len(candidates)
+		}
+	}
+	if req.RankerTopK > len(candidates) {
+		return nil, errors.New("ranker_top_k must not exceed candidate count")
 	}
 	maxCandidates := fusion_setting.GetFusionMaxCandidatesPerConfig()
 	if maxCandidates > 0 && len(candidates) > maxCandidates {
@@ -2773,20 +2858,28 @@ func prepareFusionConfig(userId int, req dto.FusionConfigCreateRequest) (*model.
 		minSuccesses = 1
 	}
 	config := &model.FusionConfig{
-		UserId:       userId,
-		Name:         req.Name,
-		ModelAlias:   req.ModelAlias,
-		Enabled:      req.Enabled,
-		JudgeKeyID:   req.JudgeKeyID,
-		JudgeModel:   req.JudgeModel,
-		RoutingMode:  req.RoutingMode,
-		DirectKeyID:  req.DirectKeyID,
-		DirectModel:  req.DirectModel,
-		Strategy:     req.Strategy,
-		TimeoutMS:    timeoutMS,
-		MaxParallel:  maxParallel,
-		MinSuccesses: minSuccesses,
-		JudgePrompt:  strings.TrimSpace(req.JudgePrompt),
+		UserId:                userId,
+		Name:                  req.Name,
+		ModelAlias:            req.ModelAlias,
+		Enabled:               req.Enabled,
+		JudgeKeyID:            req.JudgeKeyID,
+		JudgeModel:            req.JudgeModel,
+		RoutingMode:           req.RoutingMode,
+		DirectKeyID:           req.DirectKeyID,
+		DirectModel:           req.DirectModel,
+		QualityMode:           req.QualityMode,
+		RankerKeyID:           req.RankerKeyID,
+		RankerModel:           req.RankerModel,
+		EscalationKeyID:       req.EscalationKeyID,
+		EscalationModel:       req.EscalationModel,
+		QualityThreshold:      req.QualityThreshold,
+		RankerTopK:            req.RankerTopK,
+		CandidateSamplingMode: req.CandidateSamplingMode,
+		Strategy:              req.Strategy,
+		TimeoutMS:             timeoutMS,
+		MaxParallel:           maxParallel,
+		MinSuccesses:          minSuccesses,
+		JudgePrompt:           strings.TrimSpace(req.JudgePrompt),
 	}
 	if err := config.SetCandidates(candidates); err != nil {
 		return nil, err
@@ -2815,25 +2908,33 @@ func buildFusionConfigResponse(config *model.FusionConfig) (dto.FusionConfigResp
 		return dto.FusionConfigResponse{}, err
 	}
 	return dto.FusionConfigResponse{
-		Id:              config.Id,
-		Name:            config.Name,
-		ModelAlias:      config.ModelAlias,
-		Enabled:         config.Enabled,
-		Candidates:      buildFusionCandidateDTOs(candidates),
-		CandidateKeyIDs: candidateIDs,
-		CandidateModels: candidateModels,
-		JudgeKeyID:      config.JudgeKeyID,
-		JudgeModel:      config.JudgeModel,
-		RoutingMode:     config.RoutingMode,
-		DirectKeyID:     config.DirectKeyID,
-		DirectModel:     config.DirectModel,
-		Strategy:        config.Strategy,
-		TimeoutMS:       config.TimeoutMS,
-		MaxParallel:     config.MaxParallel,
-		MinSuccesses:    config.MinSuccesses,
-		JudgePrompt:     config.JudgePrompt,
-		CreatedAt:       config.CreatedAt,
-		UpdatedAt:       config.UpdatedAt,
+		Id:                    config.Id,
+		Name:                  config.Name,
+		ModelAlias:            config.ModelAlias,
+		Enabled:               config.Enabled,
+		Candidates:            buildFusionCandidateDTOs(candidates),
+		CandidateKeyIDs:       candidateIDs,
+		CandidateModels:       candidateModels,
+		JudgeKeyID:            config.JudgeKeyID,
+		JudgeModel:            config.JudgeModel,
+		RoutingMode:           config.RoutingMode,
+		DirectKeyID:           config.DirectKeyID,
+		DirectModel:           config.DirectModel,
+		QualityMode:           config.QualityMode,
+		RankerKeyID:           config.RankerKeyID,
+		RankerModel:           config.RankerModel,
+		EscalationKeyID:       config.EscalationKeyID,
+		EscalationModel:       config.EscalationModel,
+		QualityThreshold:      config.QualityThreshold,
+		RankerTopK:            config.RankerTopK,
+		CandidateSamplingMode: config.CandidateSamplingMode,
+		Strategy:              config.Strategy,
+		TimeoutMS:             config.TimeoutMS,
+		MaxParallel:           config.MaxParallel,
+		MinSuccesses:          config.MinSuccesses,
+		JudgePrompt:           config.JudgePrompt,
+		CreatedAt:             config.CreatedAt,
+		UpdatedAt:             config.UpdatedAt,
 	}, nil
 }
 

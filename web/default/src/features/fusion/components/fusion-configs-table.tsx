@@ -25,9 +25,18 @@ import {
   StaticDataTable,
   type StaticDataTableColumn,
 } from '@/components/data-table'
-import { StatusBadge, StatusBadgeList } from '@/components/status-badge'
+import {
+  StatusBadge,
+  StatusBadgeList,
+  type StatusVariant,
+} from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 
+import {
+  FUSION_QUALITY_MODE_GUARDED,
+  FUSION_QUALITY_MODE_OFF,
+  FUSION_QUALITY_MODE_RANKED,
+} from '../constants'
 import type { FusionAPIKey, FusionConfig } from '../types'
 
 type FusionConfigsTableProps = {
@@ -58,6 +67,16 @@ export function FusionConfigsTable(props: FusionConfigsTableProps) {
       key_id: keyId,
       model: (config.candidate_models ?? {})[String(keyId)] ?? '',
     }))
+  }
+  const qualityLabel = (mode: string) => {
+    if (mode === FUSION_QUALITY_MODE_RANKED) return t('Ranked')
+    if (mode === FUSION_QUALITY_MODE_GUARDED) return t('Guarded')
+    return t('Off')
+  }
+  const qualityVariant = (mode: string): StatusVariant => {
+    if (mode === FUSION_QUALITY_MODE_GUARDED) return 'warning'
+    if (mode === FUSION_QUALITY_MODE_RANKED) return 'blue'
+    return 'neutral'
   }
 
   const columns: StaticDataTableColumn<FusionConfig>[] = [
@@ -149,6 +168,21 @@ export function FusionConfigsTable(props: FusionConfigsTableProps) {
       cell: (config) => (
         <StatusBadge label={config.strategy} variant='blue' copyable={false} />
       ),
+    },
+    {
+      id: 'quality',
+      header: t('Quality'),
+      cellClassName: 'min-w-32',
+      cell: (config) => {
+        const mode = config.quality_mode || FUSION_QUALITY_MODE_OFF
+        return (
+          <StatusBadge
+            label={qualityLabel(mode)}
+            variant={qualityVariant(mode)}
+            copyable={false}
+          />
+        )
+      },
     },
     {
       id: 'actions',

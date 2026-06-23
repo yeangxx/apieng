@@ -20,6 +20,11 @@ import { z } from 'zod'
 
 import {
   FUSION_KEY_STATUS,
+  FUSION_CANDIDATE_SAMPLING_CONFIGURED,
+  FUSION_CANDIDATE_SAMPLING_SELF_SAMPLE,
+  FUSION_QUALITY_MODE_GUARDED,
+  FUSION_QUALITY_MODE_OFF,
+  FUSION_QUALITY_MODE_RANKED,
   FUSION_PROTOCOL_ANTHROPIC_MESSAGES,
   FUSION_PROTOCOL_OPENAI_CHAT_COMPATIBLE,
   FUSION_PROTOCOL_OPENAI_RESPONSES,
@@ -99,6 +104,25 @@ export const fusionConfigSchema = z.object({
     .default(FUSION_ROUTING_MODE_ALWAYS),
   direct_key_id: z.number().default(0),
   direct_model: z.string().default(''),
+  quality_mode: z
+    .enum([
+      FUSION_QUALITY_MODE_OFF,
+      FUSION_QUALITY_MODE_RANKED,
+      FUSION_QUALITY_MODE_GUARDED,
+    ])
+    .default(FUSION_QUALITY_MODE_OFF),
+  ranker_key_id: z.number().default(0),
+  ranker_model: z.string().default(''),
+  escalation_key_id: z.number().default(0),
+  escalation_model: z.string().default(''),
+  quality_threshold: z.number().default(0.65),
+  ranker_top_k: z.number().default(3),
+  candidate_sampling_mode: z
+    .enum([
+      FUSION_CANDIDATE_SAMPLING_CONFIGURED,
+      FUSION_CANDIDATE_SAMPLING_SELF_SAMPLE,
+    ])
+    .default(FUSION_CANDIDATE_SAMPLING_CONFIGURED),
   strategy: z.string(),
   timeout_ms: z.number(),
   max_parallel: z.number(),
@@ -137,7 +161,10 @@ export const getFusionKeyFormSchema = (t: (key: string) => string) =>
   z.object({
     name: z.string().trim().min(1, t('Name is required')).max(80),
     provider: z.string().trim().min(1),
-    template_id: z.coerce.number().int().positive(t('Upstream protocol is required')),
+    template_id: z.coerce
+      .number()
+      .int()
+      .positive(t('Upstream protocol is required')),
     base_url: z.string().trim().min(1, t('Base URL is required')),
     api_key: z.string(),
     default_model: z
@@ -198,6 +225,21 @@ export const getFusionConfigFormSchema = (t: (key: string) => string) =>
       ]),
       direct_key_id: z.coerce.number().int().min(0),
       direct_model: z.string().trim(),
+      quality_mode: z.enum([
+        FUSION_QUALITY_MODE_OFF,
+        FUSION_QUALITY_MODE_RANKED,
+        FUSION_QUALITY_MODE_GUARDED,
+      ]),
+      ranker_key_id: z.coerce.number().int().min(0),
+      ranker_model: z.string().trim(),
+      escalation_key_id: z.coerce.number().int().min(0),
+      escalation_model: z.string().trim(),
+      quality_threshold: z.coerce.number().min(0.01).max(1),
+      ranker_top_k: z.coerce.number().int().min(1),
+      candidate_sampling_mode: z.enum([
+        FUSION_CANDIDATE_SAMPLING_CONFIGURED,
+        FUSION_CANDIDATE_SAMPLING_SELF_SAMPLE,
+      ]),
       strategy: z.literal(FUSION_STRATEGY_SYNTHESIZE),
       timeout_ms: z.coerce.number().int().min(1000),
       max_parallel: z.coerce.number().int().min(1),
@@ -217,6 +259,13 @@ export const getFusionConfigFormSchema = (t: (key: string) => string) =>
           code: 'custom',
           path: ['min_successes'],
           message: t('Minimum successes cannot exceed candidate count'),
+        })
+      }
+      if (values.ranker_top_k > values.candidates.length) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['ranker_top_k'],
+          message: t('Ranker top K cannot exceed candidate count'),
         })
       }
     })
@@ -286,12 +335,18 @@ export const getFusionUpstreamTemplateFormSchema = (
       .string()
       .trim()
       .min(1, t('Client path is required'))
-      .refine((value) => value.startsWith('/'), t('Client path must start with /')),
+      .refine(
+        (value) => value.startsWith('/'),
+        t('Client path must start with /')
+      ),
     endpoint_path: z
       .string()
       .trim()
       .min(1, t('Endpoint path is required'))
-      .refine((value) => value.startsWith('/'), t('Endpoint path must start with /')),
+      .refine(
+        (value) => value.startsWith('/'),
+        t('Endpoint path must start with /')
+      ),
     auth_type: z.enum(['bearer', 'header', 'query', 'none']),
     auth_header: z.string(),
     auth_query_name: z.string(),
@@ -322,6 +377,14 @@ export type FusionConfigPayload = {
   routing_mode: string
   direct_key_id: number
   direct_model: string
+  quality_mode: string
+  ranker_key_id: number
+  ranker_model: string
+  escalation_key_id: number
+  escalation_model: string
+  quality_threshold: number
+  ranker_top_k: number
+  candidate_sampling_mode: string
   strategy: string
   timeout_ms: number
   max_parallel: number

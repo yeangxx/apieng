@@ -17,7 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { GitBranch, SlidersHorizontal, WandSparkles } from 'lucide-react'
+import {
+  GitBranch,
+  ShieldCheck,
+  SlidersHorizontal,
+  WandSparkles,
+} from 'lucide-react'
 import { useEffect, useMemo } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -58,6 +63,11 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
 import {
+  FUSION_CANDIDATE_SAMPLING_CONFIGURED,
+  FUSION_CANDIDATE_SAMPLING_SELF_SAMPLE,
+  FUSION_QUALITY_MODE_GUARDED,
+  FUSION_QUALITY_MODE_OFF,
+  FUSION_QUALITY_MODE_RANKED,
   FUSION_ROUTING_MODE_ALWAYS,
   FUSION_ROUTING_MODE_AUTO_SIMPLE,
   FUSION_STRATEGY_SYNTHESIZE,
@@ -188,17 +198,30 @@ function buildDefaults(
 ): FusionConfigFormInput {
   const modelOptions = buildModelOptions(keys)
   const firstOption = modelOptions[0]
+  const candidates = buildCandidateDefaults(keys, config)
+  const defaultRankerTopK = Math.max(1, Math.min(3, candidates.length || 1))
 
   return {
     name: config?.name ?? '',
     model_alias: config?.model_alias ?? 'fusion:research',
     enabled: config?.enabled ?? true,
-    candidates: buildCandidateDefaults(keys, config),
+    candidates,
     judge_key_id: config?.judge_key_id ?? firstOption?.keyId ?? 0,
     judge_model: config?.judge_model ?? firstOption?.model ?? '',
     routing_mode: config?.routing_mode ?? FUSION_ROUTING_MODE_ALWAYS,
     direct_key_id: config?.direct_key_id ?? 0,
     direct_model: config?.direct_model ?? '',
+    quality_mode: config
+      ? (config.quality_mode ?? FUSION_QUALITY_MODE_OFF)
+      : FUSION_QUALITY_MODE_RANKED,
+    ranker_key_id: config?.ranker_key_id ?? 0,
+    ranker_model: config?.ranker_model ?? '',
+    escalation_key_id: config?.escalation_key_id ?? 0,
+    escalation_model: config?.escalation_model ?? '',
+    quality_threshold: config?.quality_threshold ?? 0.65,
+    ranker_top_k: config?.ranker_top_k ?? defaultRankerTopK,
+    candidate_sampling_mode:
+      config?.candidate_sampling_mode ?? FUSION_CANDIDATE_SAMPLING_CONFIGURED,
     strategy: FUSION_STRATEGY_SYNTHESIZE,
     timeout_ms: config?.timeout_ms ?? 45000,
     max_parallel: config?.max_parallel ?? 4,
@@ -219,9 +242,10 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
     () => buildModelGroups(enabledKeys),
     [enabledKeys]
   )
-  const modelOptions = useMemo(() => flattenModelGroups(modelGroups), [
-    modelGroups,
-  ])
+  const modelOptions = useMemo(
+    () => flattenModelGroups(modelGroups),
+    [modelGroups]
+  )
   const modelOptionByValue = useMemo(() => {
     const result = new Map<string, FusionModelOption>()
     modelOptions.forEach((option) => result.set(option.value, option))
@@ -256,6 +280,27 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
     directKeyID > 0 && directModel
       ? modelOptionValue(directKeyID, directModel)
       : ''
+  const watchedRankerKeyID = form.watch('ranker_key_id')
+  const rankerKeyID =
+    typeof watchedRankerKeyID === 'number' ? watchedRankerKeyID : 0
+  const rankerModel = form.watch('ranker_model')
+  const rankerValue =
+    rankerKeyID > 0 && rankerModel
+      ? modelOptionValue(rankerKeyID, rankerModel)
+      : ''
+  const watchedEscalationKeyID = form.watch('escalation_key_id')
+  const escalationKeyID =
+    typeof watchedEscalationKeyID === 'number' ? watchedEscalationKeyID : 0
+  const escalationModel = form.watch('escalation_model')
+  const escalationValue =
+    escalationKeyID > 0 && escalationModel
+      ? modelOptionValue(escalationKeyID, escalationModel)
+      : ''
+  const watchedQualityMode = form.watch('quality_mode')
+  const qualityMode =
+    typeof watchedQualityMode === 'string'
+      ? watchedQualityMode
+      : FUSION_QUALITY_MODE_OFF
 
   const onSubmit = async (values: FusionConfigFormValues) => {
     const candidates = values.candidates.map((candidate) => ({
@@ -282,6 +327,14 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
       routing_mode: values.routing_mode,
       direct_key_id: values.direct_key_id,
       direct_model: values.direct_model.trim(),
+      quality_mode: values.quality_mode,
+      ranker_key_id: values.ranker_key_id,
+      ranker_model: values.ranker_model.trim(),
+      escalation_key_id: values.escalation_key_id,
+      escalation_model: values.escalation_model.trim(),
+      quality_threshold: values.quality_threshold,
+      ranker_top_k: values.ranker_top_k,
+      candidate_sampling_mode: values.candidate_sampling_mode,
       strategy: values.strategy,
       timeout_ms: values.timeout_ms,
       max_parallel: values.max_parallel,
@@ -389,7 +442,7 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
                     <FormLabel>{t('Candidate Models')}</FormLabel>
                     <FormDescription>
                       {t(
-                        'Select candidate models from all enabled Fusion keys.'
+                        'Use 2-3 candidate models in the same quality tier; weak candidates can lower Fusion quality.'
                       )}
                     </FormDescription>
                     {modelOptions.length === 0 && (
@@ -511,9 +564,13 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
                         <NativeSelect
                           className='w-full'
                           value={field.value}
-                          onChange={(event) => field.onChange(event.target.value)}
+                          onChange={(event) =>
+                            field.onChange(event.target.value)
+                          }
                         >
-                          <NativeSelectOption value={FUSION_ROUTING_MODE_ALWAYS}>
+                          <NativeSelectOption
+                            value={FUSION_ROUTING_MODE_ALWAYS}
+                          >
                             {t('Always use Fusion')}
                           </NativeSelectOption>
                           <NativeSelectOption
@@ -611,6 +668,240 @@ export function FusionConfigDrawer(props: FusionConfigDrawerProps) {
                   </FormItem>
                 )}
               />
+            </SideDrawerSection>
+
+            <SideDrawerSection>
+              <SideDrawerSectionHeader
+                title={t('Quality Control')}
+                description={t(
+                  'Rank candidates before Judge synthesis and escalate uncertain results when guarded mode is enabled.'
+                )}
+                icon={<ShieldCheck className='size-4' />}
+              />
+              <div className='grid gap-4 sm:grid-cols-2'>
+                <FormField
+                  control={form.control}
+                  name='quality_mode'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Quality Mode')}</FormLabel>
+                      <FormControl>
+                        <NativeSelect
+                          className='w-full'
+                          value={field.value}
+                          onChange={(event) =>
+                            field.onChange(event.target.value)
+                          }
+                        >
+                          <NativeSelectOption value={FUSION_QUALITY_MODE_OFF}>
+                            {t('Off')}
+                          </NativeSelectOption>
+                          <NativeSelectOption
+                            value={FUSION_QUALITY_MODE_RANKED}
+                          >
+                            {t('Rank candidates')}
+                          </NativeSelectOption>
+                          <NativeSelectOption
+                            value={FUSION_QUALITY_MODE_GUARDED}
+                          >
+                            {t('Guarded with escalation')}
+                          </NativeSelectOption>
+                        </NativeSelect>
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Ranked mode filters candidate evidence before Judge. Guarded mode upgrades uncertain results to the escalation model.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='candidate_sampling_mode'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Candidate Sampling')}</FormLabel>
+                      <FormControl>
+                        <NativeSelect
+                          className='w-full'
+                          value={field.value}
+                          onChange={(event) =>
+                            field.onChange(event.target.value)
+                          }
+                        >
+                          <NativeSelectOption
+                            value={FUSION_CANDIDATE_SAMPLING_CONFIGURED}
+                          >
+                            {t('Configured models')}
+                          </NativeSelectOption>
+                          <NativeSelectOption
+                            value={FUSION_CANDIDATE_SAMPLING_SELF_SAMPLE}
+                          >
+                            {t('Self sample first candidate')}
+                          </NativeSelectOption>
+                        </NativeSelect>
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Self sampling repeats the first candidate model to compare single-model multi-sampling against mixed-model Fusion.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+              <div className='grid gap-4 sm:grid-cols-2'>
+                <FormField
+                  control={form.control}
+                  name='ranker_model'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Ranker Model')}</FormLabel>
+                      <FormControl>
+                        <FusionJudgeModelPicker
+                          groups={modelGroups}
+                          value={rankerValue}
+                          onValueChange={(option) => {
+                            if (!option) return
+                            form.setValue('ranker_key_id', option.keyId, {
+                              shouldDirty: true,
+                              shouldValidate: true,
+                            })
+                            field.onChange(option.model)
+                          }}
+                        />
+                      </FormControl>
+                      <div className='flex items-center justify-between gap-2'>
+                        <FormDescription>
+                          {t('Leave empty to use the Judge model as Ranker.')}
+                        </FormDescription>
+                        {(rankerKeyID > 0 || rankerModel) && (
+                          <Button
+                            type='button'
+                            variant='ghost'
+                            size='sm'
+                            onClick={() => {
+                              form.setValue('ranker_key_id', 0, {
+                                shouldDirty: true,
+                                shouldValidate: true,
+                              })
+                              field.onChange('')
+                            }}
+                          >
+                            {t('Use Judge')}
+                          </Button>
+                        )}
+                      </div>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='escalation_model'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Escalation Model')}</FormLabel>
+                      <FormControl>
+                        <FusionJudgeModelPicker
+                          groups={modelGroups}
+                          value={escalationValue}
+                          onValueChange={(option) => {
+                            if (!option) return
+                            form.setValue('escalation_key_id', option.keyId, {
+                              shouldDirty: true,
+                              shouldValidate: true,
+                            })
+                            field.onChange(option.model)
+                          }}
+                        />
+                      </FormControl>
+                      <div className='flex items-center justify-between gap-2'>
+                        <FormDescription>
+                          {qualityMode === FUSION_QUALITY_MODE_GUARDED
+                            ? t(
+                                'Guarded mode uses this model when candidate quality is uncertain.'
+                              )
+                            : t(
+                                'Leave empty to use the Judge model if escalation is enabled.'
+                              )}
+                        </FormDescription>
+                        {(escalationKeyID > 0 || escalationModel) && (
+                          <Button
+                            type='button'
+                            variant='ghost'
+                            size='sm'
+                            onClick={() => {
+                              form.setValue('escalation_key_id', 0, {
+                                shouldDirty: true,
+                                shouldValidate: true,
+                              })
+                              field.onChange('')
+                            }}
+                          >
+                            {t('Use Judge')}
+                          </Button>
+                        )}
+                      </div>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+              <div className='grid gap-4 sm:grid-cols-2'>
+                <FormField
+                  control={form.control}
+                  name='quality_threshold'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Quality Threshold')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          value={Number(field.value ?? 0)}
+                          type='number'
+                          min={0.01}
+                          max={1}
+                          step={0.01}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Guarded mode escalates when score or confidence falls below this value.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='ranker_top_k'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Ranker Top K')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          value={Number(field.value ?? 0)}
+                          type='number'
+                          min={1}
+                          max={Math.max(1, selectedCandidates.length)}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Ranker selects at most this many candidates for Judge synthesis.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
             </SideDrawerSection>
 
             <SideDrawerSection>

@@ -51,12 +51,16 @@ export const FUSION_KEY_STATUS_OPTIONS = Object.values(FUSION_KEY_STATUSES).map(
 
 export const FUSION_PROVIDER_OPENAI_COMPATIBLE = 'openai_compatible'
 export const FUSION_PROTOCOL_OPENAI_RESPONSES = 'openai_responses'
-export const FUSION_PROTOCOL_OPENAI_CHAT_COMPATIBLE =
-  'openai_chat_compatible'
+export const FUSION_PROTOCOL_OPENAI_CHAT_COMPATIBLE = 'openai_chat_compatible'
 export const FUSION_PROTOCOL_ANTHROPIC_MESSAGES = 'anthropic_messages'
 export const FUSION_STRATEGY_SYNTHESIZE = 'synthesize'
 export const FUSION_ROUTING_MODE_ALWAYS = 'always_fusion'
 export const FUSION_ROUTING_MODE_AUTO_SIMPLE = 'auto_simple'
+export const FUSION_QUALITY_MODE_OFF = 'off'
+export const FUSION_QUALITY_MODE_RANKED = 'ranked'
+export const FUSION_QUALITY_MODE_GUARDED = 'guarded'
+export const FUSION_CANDIDATE_SAMPLING_CONFIGURED = 'configured'
+export const FUSION_CANDIDATE_SAMPLING_SELF_SAMPLE = 'self_sample'
 
 export const FUSION_PROTOCOL_OPTIONS = [
   { label: 'OpenAI Responses', value: FUSION_PROTOCOL_OPENAI_RESPONSES },
@@ -75,7 +79,7 @@ export const FUSION_AUTH_TYPE_OPTIONS = [
 ] as const
 
 export const FUSION_BILLING_DEFAULT_EXPRESSION =
-  'max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 + failed * failed_quota)'
+  'max(min_quota, (cp + cc) * 0.20 + (jp + jc) * 0.50 + (rp + rc) * 0.20 + (ep + ec) * 0.50 + failed * failed_quota)'
 
 export const FUSION_ERROR_MESSAGES = {
   LOAD_KEYS_FAILED: 'Failed to load Fusion keys',

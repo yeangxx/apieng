@@ -100,22 +100,30 @@ type FusionCandidateConfig struct {
 }
 
 type FusionConfigCreateRequest struct {
-	Name            string                  `json:"name"`
-	ModelAlias      string                  `json:"model_alias"`
-	Enabled         bool                    `json:"enabled"`
-	Candidates      []FusionCandidateConfig `json:"candidates"`
-	CandidateKeyIDs []int                   `json:"candidate_key_ids"`
-	CandidateModels map[string]string       `json:"candidate_models"`
-	JudgeKeyID      int                     `json:"judge_key_id"`
-	JudgeModel      string                  `json:"judge_model"`
-	RoutingMode     string                  `json:"routing_mode"`
-	DirectKeyID     int                     `json:"direct_key_id"`
-	DirectModel     string                  `json:"direct_model"`
-	Strategy        string                  `json:"strategy"`
-	TimeoutMS       int                     `json:"timeout_ms"`
-	MaxParallel     int                     `json:"max_parallel"`
-	MinSuccesses    int                     `json:"min_successes"`
-	JudgePrompt     string                  `json:"judge_prompt"`
+	Name                  string                  `json:"name"`
+	ModelAlias            string                  `json:"model_alias"`
+	Enabled               bool                    `json:"enabled"`
+	Candidates            []FusionCandidateConfig `json:"candidates"`
+	CandidateKeyIDs       []int                   `json:"candidate_key_ids"`
+	CandidateModels       map[string]string       `json:"candidate_models"`
+	JudgeKeyID            int                     `json:"judge_key_id"`
+	JudgeModel            string                  `json:"judge_model"`
+	RoutingMode           string                  `json:"routing_mode"`
+	DirectKeyID           int                     `json:"direct_key_id"`
+	DirectModel           string                  `json:"direct_model"`
+	QualityMode           string                  `json:"quality_mode"`
+	RankerKeyID           int                     `json:"ranker_key_id"`
+	RankerModel           string                  `json:"ranker_model"`
+	EscalationKeyID       int                     `json:"escalation_key_id"`
+	EscalationModel       string                  `json:"escalation_model"`
+	QualityThreshold      float64                 `json:"quality_threshold"`
+	RankerTopK            int                     `json:"ranker_top_k"`
+	CandidateSamplingMode string                  `json:"candidate_sampling_mode"`
+	Strategy              string                  `json:"strategy"`
+	TimeoutMS             int                     `json:"timeout_ms"`
+	MaxParallel           int                     `json:"max_parallel"`
+	MinSuccesses          int                     `json:"min_successes"`
+	JudgePrompt           string                  `json:"judge_prompt"`
 }
 
 type FusionConfigUpdateRequest struct {
@@ -123,23 +131,31 @@ type FusionConfigUpdateRequest struct {
 }
 
 type FusionConfigResponse struct {
-	Id              int                     `json:"id"`
-	Name            string                  `json:"name"`
-	ModelAlias      string                  `json:"model_alias"`
-	Enabled         bool                    `json:"enabled"`
-	Candidates      []FusionCandidateConfig `json:"candidates"`
-	CandidateKeyIDs []int                   `json:"candidate_key_ids"`
-	CandidateModels map[string]string       `json:"candidate_models"`
-	JudgeKeyID      int                     `json:"judge_key_id"`
-	JudgeModel      string                  `json:"judge_model"`
-	RoutingMode     string                  `json:"routing_mode"`
-	DirectKeyID     int                     `json:"direct_key_id"`
-	DirectModel     string                  `json:"direct_model"`
-	Strategy        string                  `json:"strategy"`
-	TimeoutMS       int                     `json:"timeout_ms"`
-	MaxParallel     int                     `json:"max_parallel"`
-	MinSuccesses    int                     `json:"min_successes"`
-	JudgePrompt     string                  `json:"judge_prompt"`
-	CreatedAt       int64                   `json:"created_at"`
-	UpdatedAt       int64                   `json:"updated_at"`
+	Id                    int                     `json:"id"`
+	Name                  string                  `json:"name"`
+	ModelAlias            string                  `json:"model_alias"`
+	Enabled               bool                    `json:"enabled"`
+	Candidates            []FusionCandidateConfig `json:"candidates"`
+	CandidateKeyIDs       []int                   `json:"candidate_key_ids"`
+	CandidateModels       map[string]string       `json:"candidate_models"`
+	JudgeKeyID            int                     `json:"judge_key_id"`
+	JudgeModel            string                  `json:"judge_model"`
+	RoutingMode           string                  `json:"routing_mode"`
+	DirectKeyID           int                     `json:"direct_key_id"`
+	DirectModel           string                  `json:"direct_model"`
+	QualityMode           string                  `json:"quality_mode"`
+	RankerKeyID           int                     `json:"ranker_key_id"`
+	RankerModel           string                  `json:"ranker_model"`
+	EscalationKeyID       int                     `json:"escalation_key_id"`
+	EscalationModel       string                  `json:"escalation_model"`
+	QualityThreshold      float64                 `json:"quality_threshold"`
+	RankerTopK            int                     `json:"ranker_top_k"`
+	CandidateSamplingMode string                  `json:"candidate_sampling_mode"`
+	Strategy              string                  `json:"strategy"`
+	TimeoutMS             int                     `json:"timeout_ms"`
+	MaxParallel           int                     `json:"max_parallel"`
+	MinSuccesses          int                     `json:"min_successes"`
+	JudgePrompt           string                  `json:"judge_prompt"`
+	CreatedAt             int64                   `json:"created_at"`
+	UpdatedAt             int64                   `json:"updated_at"`
 }

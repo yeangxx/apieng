@@ -716,25 +716,62 @@ func TestCreateFusionConfigRejectsForeignDirectKey(t *testing.T) {
 	assert.Contains(t, payload["message"], "direct key")
 }
 
+func TestCreateFusionConfigRejectsForeignRankerKey(t *testing.T) {
+	setupFusionControllerTestDB(t)
+	key := createFusionControllerKey(t, 1, "owned")
+	foreignKey := createFusionControllerKey(t, 2, "foreign")
+
+	recorder := fusionControllerJSONRequest(t, CreateFusionConfig, http.MethodPost, "/api/fusion/configs", 1, dto.FusionConfigCreateRequest{
+		Name:                  "Research",
+		ModelAlias:            "fusion:research",
+		Enabled:               true,
+		CandidateKeyIDs:       []int{key.Id},
+		CandidateModels:       map[string]string{fmt.Sprintf("%d", key.Id): "gpt-4o-mini"},
+		JudgeKeyID:            key.Id,
+		JudgeModel:            "gpt-4o-mini",
+		QualityMode:           model.FusionQualityModeRanked,
+		RankerKeyID:           foreignKey.Id,
+		RankerModel:           "gpt-4o-mini",
+		QualityThreshold:      0.65,
+		RankerTopK:            1,
+		CandidateSamplingMode: model.FusionCandidateSamplingModeConfigured,
+		Strategy:              model.FusionStrategySynthesize,
+		TimeoutMS:             45000,
+		MaxParallel:           1,
+		MinSuccesses:          1,
+	})
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	payload := decodeFusionControllerResponse(t, recorder)
+	assert.Equal(t, false, payload["success"])
+	assert.Contains(t, payload["message"], "ranker key")
+}
+
 func TestCreateFusionConfigReturnsSavedShape(t *testing.T) {
 	setupFusionControllerTestDB(t)
 	key := createFusionControllerKey(t, 1, "owned")
 
 	recorder := fusionControllerJSONRequest(t, CreateFusionConfig, http.MethodPost, "/api/fusion/configs", 1, dto.FusionConfigCreateRequest{
-		Name:            "Research",
-		ModelAlias:      "fusion:research",
-		Enabled:         true,
-		CandidateKeyIDs: []int{key.Id},
-		CandidateModels: map[string]string{fmt.Sprintf("%d", key.Id): "gpt-4o-mini"},
-		JudgeKeyID:      key.Id,
-		JudgeModel:      "gpt-4o-mini",
-		RoutingMode:     model.FusionRoutingModeAutoSimple,
-		DirectKeyID:     key.Id,
-		DirectModel:     "gpt-4o-mini",
-		Strategy:        model.FusionStrategySynthesize,
-		TimeoutMS:       45000,
-		MaxParallel:     1,
-		MinSuccesses:    1,
+		Name:                  "Research",
+		ModelAlias:            "fusion:research",
+		Enabled:               true,
+		CandidateKeyIDs:       []int{key.Id},
+		CandidateModels:       map[string]string{fmt.Sprintf("%d", key.Id): "gpt-4o-mini"},
+		JudgeKeyID:            key.Id,
+		JudgeModel:            "gpt-4o-mini",
+		RoutingMode:           model.FusionRoutingModeAutoSimple,
+		DirectKeyID:           key.Id,
+		DirectModel:           "gpt-4o-mini",
+		QualityMode:           model.FusionQualityModeRanked,
+		RankerKeyID:           key.Id,
+		RankerModel:           "gpt-4o-mini",
+		QualityThreshold:      0.7,
+		RankerTopK:            1,
+		CandidateSamplingMode: model.FusionCandidateSamplingModeSelfSample,
+		Strategy:              model.FusionStrategySynthesize,
+		TimeoutMS:             45000,
+		MaxParallel:           1,
+		MinSuccesses:          1,
 	})
 
 	require.Equal(t, http.StatusOK, recorder.Code)
@@ -747,6 +784,13 @@ func TestCreateFusionConfigReturnsSavedShape(t *testing.T) {
 	assert.Contains(t, body, model.FusionRoutingModeAutoSimple)
 	assert.Contains(t, body, "direct_key_id")
 	assert.Contains(t, body, "direct_model")
+	assert.Contains(t, body, "quality_mode")
+	assert.Contains(t, body, model.FusionQualityModeRanked)
+	assert.Contains(t, body, "ranker_key_id")
+	assert.Contains(t, body, "quality_threshold")
+	assert.Contains(t, body, "ranker_top_k")
+	assert.Contains(t, body, "candidate_sampling_mode")
+	assert.Contains(t, body, model.FusionCandidateSamplingModeSelfSample)
 }
 
 func TestFusionLogOtherIncludesExecutionModeAndCanceledCandidates(t *testing.T) {

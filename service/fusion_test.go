@@ -401,6 +401,153 @@ func TestFusionEngineSynthesizesSuccessfulCandidates(t *testing.T) {
 	assert.Equal(t, 7, billingInput.JudgeCompletionTokens)
 }
 
+func TestFusionEngineRankedQualitySelectsRankerIncludedCandidates(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	rankerJSON := `{"score":0.82,"confidence":0.91,"include":[1],"reject":[{"index":2,"reason":"misses requirement"}],"reasons":["candidate 1 is more complete"],"conflicts":["candidate 2 omits the constraint"],"missing_coverage":[],"need_escalation":false}`
+	server, state := newFusionTestTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a":  fusionTestResponse("candidate-a", "candidate A correct answer with constraints", 10, 5),
+		"candidate-b":  fusionTestResponse("candidate-b", "candidate B weak answer missing constraints", 11, 6),
+		"ranker-model": fusionTestResponse("ranker-model", rankerJSON, 20, 3),
+		"judge-model":  fusionTestResponse("judge-model", "final synthesis", 30, 7),
+	}, nil)
+	defer server.Close()
+	configureFusionServiceTestBaseURL(t, server.URL, nil)
+
+	keyA := createFusionServiceKey(t, 1, "candidate-a", server.URL+"/v1", "candidate-a")
+	keyB := createFusionServiceKey(t, 1, "candidate-b", server.URL+"/v1", "candidate-b")
+	rankerKey := createFusionServiceKey(t, 1, "ranker", server.URL+"/v1", "ranker-model")
+	judgeKey := createFusionServiceKey(t, 1, "judge", server.URL+"/v1", "judge-model")
+	fusionConfig := createFusionServiceConfig(t, 1, []int{keyA.Id, keyB.Id}, judgeKey.Id, "judge-model", 2)
+	fusionConfig.QualityMode = model.FusionQualityModeRanked
+	fusionConfig.RankerKeyID = rankerKey.Id
+	fusionConfig.RankerModel = "ranker-model"
+	fusionConfig.RankerTopK = 1
+	fusionConfig.QualityThreshold = 0.65
+
+	result, err := RunFusionEngine(context.Background(), fusionEngineTestRequest(fusionConfig, server.Client()))
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "final synthesis", result.Content)
+	assert.True(t, result.Ranker.Success)
+	assert.Equal(t, model.FusionQualityModeRanked, result.Quality.Mode)
+	assert.InDelta(t, 0.82, result.Quality.Score, 0.001)
+	assert.Equal(t, []int{1}, result.Quality.IncludedCandidateIndices)
+	assert.Contains(t, result.Quality.RejectedCandidateIndices, 2)
+
+	state.mu.Lock()
+	rankerCalls := state.modelCalls["ranker-model"]
+	judgeRequests := append([]dto.GeneralOpenAIRequest(nil), state.modelBodies["judge-model"]...)
+	state.mu.Unlock()
+	assert.Equal(t, 1, rankerCalls)
+	require.Len(t, judgeRequests, 1)
+	require.Len(t, judgeRequests[0].Messages, 2)
+	judgePrompt := judgeRequests[0].Messages[1].StringContent()
+	assert.Contains(t, judgePrompt, "candidate A correct answer")
+	assert.NotContains(t, judgePrompt, "candidate B weak answer")
+
+	billingInput := BuildFusionBillingInput(result)
+	assert.Equal(t, 20, billingInput.RankerPromptTokens)
+	assert.Equal(t, 3, billingInput.RankerCompletionTokens)
+}
+
+func TestFusionEngineGuardedQualityEscalatesLowConfidence(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	rankerJSON := `{"score":0.3,"confidence":0.4,"include":[1],"reject":[{"index":2,"reason":"contradiction"}],"reasons":["answers conflict"],"conflicts":["candidate claims disagree"],"missing_coverage":["final constraint"],"need_escalation":true}`
+	server, state := newFusionTestTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a":      fusionTestResponse("candidate-a", "candidate A partial answer", 10, 5),
+		"candidate-b":      fusionTestResponse("candidate-b", "candidate B conflicting answer", 11, 6),
+		"ranker-model":     fusionTestResponse("ranker-model", rankerJSON, 20, 3),
+		"judge-model":      fusionTestResponse("judge-model", "should not run", 30, 7),
+		"escalation-model": fusionTestResponse("escalation-model", "escalated final", 40, 8),
+	}, nil)
+	defer server.Close()
+	configureFusionServiceTestBaseURL(t, server.URL, nil)
+
+	keyA := createFusionServiceKey(t, 1, "candidate-a", server.URL+"/v1", "candidate-a")
+	keyB := createFusionServiceKey(t, 1, "candidate-b", server.URL+"/v1", "candidate-b")
+	rankerKey := createFusionServiceKey(t, 1, "ranker", server.URL+"/v1", "ranker-model")
+	judgeKey := createFusionServiceKey(t, 1, "judge", server.URL+"/v1", "judge-model")
+	escalationKey := createFusionServiceKey(t, 1, "escalation", server.URL+"/v1", "escalation-model")
+	fusionConfig := createFusionServiceConfig(t, 1, []int{keyA.Id, keyB.Id}, judgeKey.Id, "judge-model", 2)
+	fusionConfig.QualityMode = model.FusionQualityModeGuarded
+	fusionConfig.RankerKeyID = rankerKey.Id
+	fusionConfig.RankerModel = "ranker-model"
+	fusionConfig.EscalationKeyID = escalationKey.Id
+	fusionConfig.EscalationModel = "escalation-model"
+	fusionConfig.RankerTopK = 1
+	fusionConfig.QualityThreshold = 0.65
+
+	result, err := RunFusionEngine(context.Background(), fusionEngineTestRequest(fusionConfig, server.Client()))
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "escalated final", result.Content)
+	assert.False(t, result.Judge.Success)
+	assert.True(t, result.Ranker.Success)
+	assert.True(t, result.Escalation.Success)
+	assert.True(t, result.Quality.EscalationTriggered)
+	assert.Contains(t, result.Quality.Reasons, "ranker_requested_escalation")
+
+	state.mu.Lock()
+	judgeCalls := state.modelCalls["judge-model"]
+	escalationCalls := state.modelCalls["escalation-model"]
+	state.mu.Unlock()
+	assert.Equal(t, 0, judgeCalls)
+	assert.Equal(t, 1, escalationCalls)
+
+	billingInput := BuildFusionBillingInput(result)
+	assert.Equal(t, 20, billingInput.RankerPromptTokens)
+	assert.Equal(t, 3, billingInput.RankerCompletionTokens)
+	assert.Equal(t, 40, billingInput.EscalationPromptTokens)
+	assert.Equal(t, 8, billingInput.EscalationCompletionTokens)
+}
+
+func TestFusionEngineToolPassthroughSkipsQualityControl(t *testing.T) {
+	setupFusionServiceTestDB(t)
+	server, state := newFusionTestTLSServer(t, map[string]dto.OpenAITextResponse{
+		"candidate-a":      fusionToolCallResponse("candidate-a", "call_a", "read_file", `{"path":"a.go"}`, 10, 1),
+		"candidate-b":      fusionTestResponse("candidate-b", "answer B", 11, 6),
+		"ranker-model":     fusionTestResponse("ranker-model", "should not run", 20, 3),
+		"judge-model":      fusionTestResponse("judge-model", "should not run", 30, 7),
+		"escalation-model": fusionTestResponse("escalation-model", "should not run", 40, 8),
+	}, nil)
+	defer server.Close()
+	configureFusionServiceTestBaseURL(t, server.URL, nil)
+
+	keyA := createFusionServiceKey(t, 1, "candidate-a", server.URL+"/v1", "candidate-a")
+	keyB := createFusionServiceKey(t, 1, "candidate-b", server.URL+"/v1", "candidate-b")
+	rankerKey := createFusionServiceKey(t, 1, "ranker", server.URL+"/v1", "ranker-model")
+	judgeKey := createFusionServiceKey(t, 1, "judge", server.URL+"/v1", "judge-model")
+	escalationKey := createFusionServiceKey(t, 1, "escalation", server.URL+"/v1", "escalation-model")
+	fusionConfig := createFusionServiceConfig(t, 1, []int{keyA.Id, keyB.Id}, judgeKey.Id, "judge-model", 2)
+	fusionConfig.QualityMode = model.FusionQualityModeGuarded
+	fusionConfig.RankerKeyID = rankerKey.Id
+	fusionConfig.RankerModel = "ranker-model"
+	fusionConfig.EscalationKeyID = escalationKey.Id
+	fusionConfig.EscalationModel = "escalation-model"
+	fusionConfig.RankerTopK = 1
+	fusionConfig.QualityThreshold = 0.65
+
+	result, err := RunFusionEngine(context.Background(), fusionEngineToolTestRequest(fusionConfig, server.Client()))
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, FusionExecutionModeToolPassthrough, result.ExecutionMode)
+	assert.Equal(t, "tool_call_passthrough", result.Quality.SkippedReason)
+	assert.False(t, result.Ranker.Success)
+	assert.False(t, result.Escalation.Success)
+
+	state.mu.Lock()
+	rankerCalls := state.modelCalls["ranker-model"]
+	judgeCalls := state.modelCalls["judge-model"]
+	escalationCalls := state.modelCalls["escalation-model"]
+	state.mu.Unlock()
+	assert.Equal(t, 0, rankerCalls)
+	assert.Equal(t, 0, judgeCalls)
+	assert.Equal(t, 0, escalationCalls)
+}
+
 func TestFusionEngineAppliesUpstreamTemplateAndKeyConfig(t *testing.T) {
 	setupFusionServiceTestDB(t)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -14,31 +14,47 @@ import (
 const FusionStrategySynthesize = "synthesize"
 const FusionRoutingModeAlways = "always_fusion"
 const FusionRoutingModeAutoSimple = "auto_simple"
+const FusionQualityModeOff = "off"
+const FusionQualityModeRanked = "ranked"
+const FusionQualityModeGuarded = "guarded"
+const FusionCandidateSamplingModeConfigured = "configured"
+const FusionCandidateSamplingModeSelfSample = "self_sample"
+
+const FusionDefaultQualityThreshold = 0.65
+const FusionDefaultRankerTopK = 3
 
 var fusionModelAliasPattern = regexp.MustCompile(`^fusion:[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 
 type FusionConfig struct {
-	Id              int            `json:"id"`
-	UserId          int            `json:"user_id" gorm:"index;index:idx_fusion_config_user_alias;index:idx_fusion_config_user_enabled"`
-	Name            string         `json:"name" gorm:"type:varchar(80);index"`
-	ModelAlias      string         `json:"model_alias" gorm:"type:varchar(80);index:idx_fusion_config_user_alias"`
-	Enabled         bool           `json:"enabled" gorm:"index:idx_fusion_config_user_enabled"`
-	Candidates      string         `json:"candidates" gorm:"type:text"`
-	CandidateKeyIDs string         `json:"candidate_key_ids" gorm:"type:text"`
-	CandidateModels string         `json:"candidate_models" gorm:"type:text"`
-	JudgeKeyID      int            `json:"judge_key_id" gorm:"index"`
-	JudgeModel      string         `json:"judge_model" gorm:"type:varchar(128)"`
-	RoutingMode     string         `json:"routing_mode" gorm:"type:varchar(32)"`
-	DirectKeyID     int            `json:"direct_key_id" gorm:"index"`
-	DirectModel     string         `json:"direct_model" gorm:"type:varchar(128)"`
-	Strategy        string         `json:"strategy" gorm:"type:varchar(32)"`
-	TimeoutMS       int            `json:"timeout_ms"`
-	MaxParallel     int            `json:"max_parallel"`
-	MinSuccesses    int            `json:"min_successes"`
-	JudgePrompt     string         `json:"judge_prompt" gorm:"type:text"`
-	CreatedAt       int64          `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt       int64          `json:"updated_at" gorm:"autoUpdateTime"`
-	DeletedAt       gorm.DeletedAt `json:"-" gorm:"index"`
+	Id                    int            `json:"id"`
+	UserId                int            `json:"user_id" gorm:"index;index:idx_fusion_config_user_alias;index:idx_fusion_config_user_enabled"`
+	Name                  string         `json:"name" gorm:"type:varchar(80);index"`
+	ModelAlias            string         `json:"model_alias" gorm:"type:varchar(80);index:idx_fusion_config_user_alias"`
+	Enabled               bool           `json:"enabled" gorm:"index:idx_fusion_config_user_enabled"`
+	Candidates            string         `json:"candidates" gorm:"type:text"`
+	CandidateKeyIDs       string         `json:"candidate_key_ids" gorm:"type:text"`
+	CandidateModels       string         `json:"candidate_models" gorm:"type:text"`
+	JudgeKeyID            int            `json:"judge_key_id" gorm:"index"`
+	JudgeModel            string         `json:"judge_model" gorm:"type:varchar(128)"`
+	RoutingMode           string         `json:"routing_mode" gorm:"type:varchar(32)"`
+	DirectKeyID           int            `json:"direct_key_id" gorm:"index"`
+	DirectModel           string         `json:"direct_model" gorm:"type:varchar(128)"`
+	QualityMode           string         `json:"quality_mode" gorm:"type:varchar(32)"`
+	RankerKeyID           int            `json:"ranker_key_id" gorm:"index"`
+	RankerModel           string         `json:"ranker_model" gorm:"type:varchar(128)"`
+	EscalationKeyID       int            `json:"escalation_key_id" gorm:"index"`
+	EscalationModel       string         `json:"escalation_model" gorm:"type:varchar(128)"`
+	QualityThreshold      float64        `json:"quality_threshold"`
+	RankerTopK            int            `json:"ranker_top_k"`
+	CandidateSamplingMode string         `json:"candidate_sampling_mode" gorm:"type:varchar(32)"`
+	Strategy              string         `json:"strategy" gorm:"type:varchar(32)"`
+	TimeoutMS             int            `json:"timeout_ms"`
+	MaxParallel           int            `json:"max_parallel"`
+	MinSuccesses          int            `json:"min_successes"`
+	JudgePrompt           string         `json:"judge_prompt" gorm:"type:text"`
+	CreatedAt             int64          `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt             int64          `json:"updated_at" gorm:"autoUpdateTime"`
+	DeletedAt             gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 type FusionCandidate struct {
@@ -55,6 +71,22 @@ func (config *FusionConfig) Normalize() {
 		config.RoutingMode = FusionRoutingModeAlways
 	}
 	config.DirectModel = strings.TrimSpace(config.DirectModel)
+	config.QualityMode = strings.TrimSpace(config.QualityMode)
+	if config.QualityMode == "" {
+		config.QualityMode = FusionQualityModeOff
+	}
+	config.RankerModel = strings.TrimSpace(config.RankerModel)
+	config.EscalationModel = strings.TrimSpace(config.EscalationModel)
+	if config.QualityThreshold <= 0 {
+		config.QualityThreshold = FusionDefaultQualityThreshold
+	}
+	if config.RankerTopK <= 0 {
+		config.RankerTopK = FusionDefaultRankerTopK
+	}
+	config.CandidateSamplingMode = strings.TrimSpace(config.CandidateSamplingMode)
+	if config.CandidateSamplingMode == "" {
+		config.CandidateSamplingMode = FusionCandidateSamplingModeConfigured
+	}
 	config.Strategy = strings.TrimSpace(config.Strategy)
 	if config.Strategy == "" {
 		config.Strategy = FusionStrategySynthesize
@@ -205,6 +237,18 @@ func ValidateFusionConfigKeyOwnership(userId int, config *FusionConfig) error {
 	if config.RoutingMode != FusionRoutingModeAlways && config.RoutingMode != FusionRoutingModeAutoSimple {
 		return fmt.Errorf("unsupported fusion routing mode: %s", config.RoutingMode)
 	}
+	if config.QualityMode != FusionQualityModeOff && config.QualityMode != FusionQualityModeRanked && config.QualityMode != FusionQualityModeGuarded {
+		return fmt.Errorf("unsupported fusion quality mode: %s", config.QualityMode)
+	}
+	if config.CandidateSamplingMode != FusionCandidateSamplingModeConfigured && config.CandidateSamplingMode != FusionCandidateSamplingModeSelfSample {
+		return fmt.Errorf("unsupported fusion candidate sampling mode: %s", config.CandidateSamplingMode)
+	}
+	if config.QualityThreshold <= 0 || config.QualityThreshold > 1 {
+		return errors.New("quality_threshold must be between 0 and 1")
+	}
+	if config.RankerTopK < 1 {
+		return errors.New("ranker_top_k must be at least 1")
+	}
 
 	candidates, err := config.GetCandidates()
 	if err != nil {
@@ -215,6 +259,9 @@ func ValidateFusionConfigKeyOwnership(userId int, config *FusionConfig) error {
 	}
 	if config.MinSuccesses < 1 || config.MinSuccesses > len(candidates) {
 		return errors.New("min_successes must be between 1 and candidate count")
+	}
+	if config.QualityMode != FusionQualityModeOff && config.RankerTopK > len(candidates) {
+		return errors.New("ranker_top_k must not exceed candidate count")
 	}
 
 	seen := make(map[string]struct{}, len(candidates))
@@ -236,7 +283,7 @@ func ValidateFusionConfigKeyOwnership(userId int, config *FusionConfig) error {
 			return errors.New("candidate model is required")
 		}
 		identity := fmt.Sprintf("%d:%s", candidate.KeyID, modelName)
-		if _, ok := seen[identity]; ok {
+		if _, ok := seen[identity]; ok && config.CandidateSamplingMode != FusionCandidateSamplingModeSelfSample {
 			return fmt.Errorf("duplicate candidate model: key %d model %s", candidate.KeyID, modelName)
 		}
 		seen[identity] = struct{}{}
@@ -259,6 +306,13 @@ func ValidateFusionConfigKeyOwnership(userId int, config *FusionConfig) error {
 	}
 	if !allowed {
 		return fmt.Errorf("judge model %s is not allowed by key %d", config.JudgeModel, config.JudgeKeyID)
+	}
+
+	if err := validateFusionOptionalQualityModel(userId, "ranker", config.RankerKeyID, config.RankerModel, config.JudgeKeyID, config.JudgeModel, config.QualityMode == FusionQualityModeRanked || config.QualityMode == FusionQualityModeGuarded); err != nil {
+		return err
+	}
+	if err := validateFusionOptionalQualityModel(userId, "escalation", config.EscalationKeyID, config.EscalationModel, config.JudgeKeyID, config.JudgeModel, config.QualityMode == FusionQualityModeGuarded); err != nil {
+		return err
 	}
 
 	directKeyID := config.DirectKeyID
@@ -285,6 +339,37 @@ func ValidateFusionConfigKeyOwnership(userId int, config *FusionConfig) error {
 	}
 	if !allowed {
 		return fmt.Errorf("direct model %s is not allowed by key %d", directModel, directKeyID)
+	}
+	return nil
+}
+
+func validateFusionOptionalQualityModel(userId int, role string, keyID int, modelName string, fallbackKeyID int, fallbackModel string, required bool) error {
+	modelName = strings.TrimSpace(modelName)
+	if keyID == 0 && modelName == "" && !required {
+		return nil
+	}
+	if keyID == 0 {
+		keyID = fallbackKeyID
+	}
+	key, err := GetFusionAPIKeyByUserAndId(userId, keyID)
+	if err != nil {
+		return fmt.Errorf("%s key %d is not owned by user %d: %w", role, keyID, userId, err)
+	}
+	if modelName == "" {
+		modelName = strings.TrimSpace(fallbackModel)
+	}
+	if modelName == "" {
+		modelName = key.DefaultModel
+	}
+	if modelName == "" {
+		return fmt.Errorf("%s model is required", role)
+	}
+	allowed, err := key.IsModelAllowed(modelName)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return fmt.Errorf("%s model %s is not allowed by key %d", role, modelName, keyID)
 	}
 	return nil
 }
@@ -347,22 +432,30 @@ func (config *FusionConfig) Update() error {
 	return DB.Model(&FusionConfig{}).
 		Where("id = ? AND user_id = ?", config.Id, config.UserId).
 		Updates(map[string]interface{}{
-			"name":              config.Name,
-			"model_alias":       config.ModelAlias,
-			"enabled":           config.Enabled,
-			"candidates":        config.Candidates,
-			"candidate_key_ids": config.CandidateKeyIDs,
-			"candidate_models":  config.CandidateModels,
-			"judge_key_id":      config.JudgeKeyID,
-			"judge_model":       config.JudgeModel,
-			"routing_mode":      config.RoutingMode,
-			"direct_key_id":     config.DirectKeyID,
-			"direct_model":      config.DirectModel,
-			"strategy":          config.Strategy,
-			"timeout_ms":        config.TimeoutMS,
-			"max_parallel":      config.MaxParallel,
-			"min_successes":     config.MinSuccesses,
-			"judge_prompt":      config.JudgePrompt,
+			"name":                    config.Name,
+			"model_alias":             config.ModelAlias,
+			"enabled":                 config.Enabled,
+			"candidates":              config.Candidates,
+			"candidate_key_ids":       config.CandidateKeyIDs,
+			"candidate_models":        config.CandidateModels,
+			"judge_key_id":            config.JudgeKeyID,
+			"judge_model":             config.JudgeModel,
+			"routing_mode":            config.RoutingMode,
+			"direct_key_id":           config.DirectKeyID,
+			"direct_model":            config.DirectModel,
+			"quality_mode":            config.QualityMode,
+			"ranker_key_id":           config.RankerKeyID,
+			"ranker_model":            config.RankerModel,
+			"escalation_key_id":       config.EscalationKeyID,
+			"escalation_model":        config.EscalationModel,
+			"quality_threshold":       config.QualityThreshold,
+			"ranker_top_k":            config.RankerTopK,
+			"candidate_sampling_mode": config.CandidateSamplingMode,
+			"strategy":                config.Strategy,
+			"timeout_ms":              config.TimeoutMS,
+			"max_parallel":            config.MaxParallel,
+			"min_successes":           config.MinSuccesses,
+			"judge_prompt":            config.JudgePrompt,
 		}).Error
 }
 

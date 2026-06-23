@@ -11,14 +11,18 @@ import (
 )
 
 type FusionBillingInput struct {
-	CandidatePromptTokens     int
-	CandidateCompletionTokens int
-	JudgePromptTokens         int
-	JudgeCompletionTokens     int
-	FailedCandidates          int
-	FailedPromptTokens        int
-	SuccessfulCandidates      int
-	TotalCandidates           int
+	CandidatePromptTokens      int
+	CandidateCompletionTokens  int
+	JudgePromptTokens          int
+	JudgeCompletionTokens      int
+	RankerPromptTokens         int
+	RankerCompletionTokens     int
+	EscalationPromptTokens     int
+	EscalationCompletionTokens int
+	FailedCandidates           int
+	FailedPromptTokens         int
+	SuccessfulCandidates       int
+	TotalCandidates            int
 }
 
 type FusionBillingPolicy struct {
@@ -52,41 +56,57 @@ func RunFusionBillingExpr(exprStr string, input FusionBillingInput, policy Fusio
 	}
 
 	vars := map[string]float64{
-		"cp":                   float64(input.CandidatePromptTokens),
-		"cc":                   float64(input.CandidateCompletionTokens),
-		"jp":                   float64(input.JudgePromptTokens),
-		"jc":                   float64(input.JudgeCompletionTokens),
-		"candidate_prompt":     float64(input.CandidatePromptTokens),
-		"candidate_completion": float64(input.CandidateCompletionTokens),
-		"judge_prompt":         float64(input.JudgePromptTokens),
-		"judge_completion":     float64(input.JudgeCompletionTokens),
-		"failed":               float64(failedCandidates),
-		"failed_prompt":        float64(failedPromptTokens),
-		"failed_quota":         float64(policy.FailedCandidateQuota),
-		"success":              float64(input.SuccessfulCandidates),
-		"total":                float64(input.TotalCandidates),
-		"min_quota":            float64(policy.MinimumQuota),
+		"cp":                    float64(input.CandidatePromptTokens),
+		"cc":                    float64(input.CandidateCompletionTokens),
+		"jp":                    float64(input.JudgePromptTokens),
+		"jc":                    float64(input.JudgeCompletionTokens),
+		"rp":                    float64(input.RankerPromptTokens),
+		"rc":                    float64(input.RankerCompletionTokens),
+		"ep":                    float64(input.EscalationPromptTokens),
+		"ec":                    float64(input.EscalationCompletionTokens),
+		"candidate_prompt":      float64(input.CandidatePromptTokens),
+		"candidate_completion":  float64(input.CandidateCompletionTokens),
+		"judge_prompt":          float64(input.JudgePromptTokens),
+		"judge_completion":      float64(input.JudgeCompletionTokens),
+		"ranker_prompt":         float64(input.RankerPromptTokens),
+		"ranker_completion":     float64(input.RankerCompletionTokens),
+		"escalation_prompt":     float64(input.EscalationPromptTokens),
+		"escalation_completion": float64(input.EscalationCompletionTokens),
+		"failed":                float64(failedCandidates),
+		"failed_prompt":         float64(failedPromptTokens),
+		"failed_quota":          float64(policy.FailedCandidateQuota),
+		"success":               float64(input.SuccessfulCandidates),
+		"total":                 float64(input.TotalCandidates),
+		"min_quota":             float64(policy.MinimumQuota),
 	}
 	env := map[string]interface{}{
-		"cp":                   vars["cp"],
-		"cc":                   vars["cc"],
-		"jp":                   vars["jp"],
-		"jc":                   vars["jc"],
-		"candidate_prompt":     vars["candidate_prompt"],
-		"candidate_completion": vars["candidate_completion"],
-		"judge_prompt":         vars["judge_prompt"],
-		"judge_completion":     vars["judge_completion"],
-		"failed":               vars["failed"],
-		"failed_prompt":        vars["failed_prompt"],
-		"failed_quota":         vars["failed_quota"],
-		"success":              vars["success"],
-		"total":                vars["total"],
-		"min_quota":            vars["min_quota"],
-		"max":                  math.Max,
-		"min":                  math.Min,
-		"abs":                  math.Abs,
-		"ceil":                 math.Ceil,
-		"floor":                math.Floor,
+		"cp":                    vars["cp"],
+		"cc":                    vars["cc"],
+		"jp":                    vars["jp"],
+		"jc":                    vars["jc"],
+		"rp":                    vars["rp"],
+		"rc":                    vars["rc"],
+		"ep":                    vars["ep"],
+		"ec":                    vars["ec"],
+		"candidate_prompt":      vars["candidate_prompt"],
+		"candidate_completion":  vars["candidate_completion"],
+		"judge_prompt":          vars["judge_prompt"],
+		"judge_completion":      vars["judge_completion"],
+		"ranker_prompt":         vars["ranker_prompt"],
+		"ranker_completion":     vars["ranker_completion"],
+		"escalation_prompt":     vars["escalation_prompt"],
+		"escalation_completion": vars["escalation_completion"],
+		"failed":                vars["failed"],
+		"failed_prompt":         vars["failed_prompt"],
+		"failed_quota":          vars["failed_quota"],
+		"success":               vars["success"],
+		"total":                 vars["total"],
+		"min_quota":             vars["min_quota"],
+		"max":                   math.Max,
+		"min":                   math.Min,
+		"abs":                   math.Abs,
+		"ceil":                  math.Ceil,
+		"floor":                 math.Floor,
 	}
 
 	program, err := expr.Compile(exprStr, expr.Env(env), expr.AsFloat64())
